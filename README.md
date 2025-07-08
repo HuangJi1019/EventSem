@@ -45,7 +45,7 @@ pip install -r requirements.txt
 
 ### Download Datasets
 ```bash
-Download QVHighligths, Charades-STA, and TACoS features, please follow th instruction of [CG-DETR](https://github.com/wjun0830/CGDETR/)
+Download QVHighligths, Charades-STA, and TACoS features, please follow the instruction of [CG-DETR]((https://github.com/wjun0830/CGDETR/)
 ```
 
 ### Linguistically Diverse Test Sets
