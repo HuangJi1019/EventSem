@@ -27,8 +27,8 @@ class PointGenerator(nn.Module):
         for stride in strides[1:]:
             reg_range.append((last, stride))
             last = stride
-        reg_range.append((last, float('inf')))
-
+        # reg_range.append((last, float('inf')))
+        reg_range.append((last, 1e6))  # 将 float('inf') 替换为一个较大的常数
         self.strides = strides
         self.reg_range = reg_range
         self.buffer_size = buffer_size
@@ -57,7 +57,7 @@ class PointGenerator(nn.Module):
         for size, buffer in zip(sizes, self.buffer):
             if size == 0:
                 continue
-            assert size <= buffer.size(0), 'reached max buffer size' # 检查层级的实际点集大小是否超过了预先缓存的最大大小
+            assert size <= buffer.size(0), 'reached max buffer size,Required size: {size}, Buffer size: {buffer.size(0)}' # 检查层级的实际点集大小是否超过了预先缓存的最大大小
             points.append(buffer[:size, :]) # 从预先缓存的点集中取出实际需要的点集大小的部分
         points = torch.cat(points)
-        return points
+        return points#[num_points,4]:4 表示每个点的四个维度 [x, reg_range_min, reg_range_max, stride]

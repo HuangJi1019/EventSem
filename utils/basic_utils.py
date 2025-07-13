@@ -218,4 +218,3 @@ def dict_to_markdown(d, max_str_len=120):
     if max_str_len is not None:
         d = {k: v[-max_str_len:] if isinstance(v, str) else v for k, v in d.items()}
     return pd.DataFrame(d, index=[0]).transpose().to_markdown()
-

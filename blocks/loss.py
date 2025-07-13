@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from nncore.nn import LOSSES, Parameter, build_loss
-
+import inspect
 
 @LOSSES.register()
 class SampledNCELoss(nn.Module):

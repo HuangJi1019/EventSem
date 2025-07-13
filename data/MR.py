@@ -2,7 +2,7 @@ _base_ = ['blocks']
 # model settings
 model = dict(
     strides=(1, 2, 4, 8),
-    buffer_size=1024,
+    buffer_size=1024+512,
     max_num_moment=50,
     pyramid_cfg=dict(type="ConvPyramid"),
     pooling_cfg=dict(type="AdaPooling"),
