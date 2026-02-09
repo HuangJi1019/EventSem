@@ -5,7 +5,6 @@ EventSem model and criterion classes.
 import torch
 import torch.nn.functional as F
 from torch import nn
-
 from EventSem.transformer import build_transformer, TransformerEncoderLayer, TransformerEncoder
 from EventSem.position_encoding import build_position_encoding, PositionEmbeddingSine
 import math
@@ -155,9 +154,8 @@ class EventSem(nn.Module):
             nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
             nn.BatchNorm1d(hidden_dim),
             nn.ReLU(inplace=True),
-            nn.Conv1d(hidden_dim, 2, kernel_size=1)  # 输出2个通道对应两个边界偏移
+            nn.Conv1d(hidden_dim, 2, kernel_size=1) 
         )
-        self.n_input_proj = self.args.n_semantic_proj
         layers = []
         for i in range(self.args.n_semantic_proj):
             relu_enabled = True
@@ -168,13 +166,7 @@ class EventSem(nn.Module):
             layers.append(
                 LinearLayer(input_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_enabled)
             )
-
         self.input_sematic_txt_proj = nn.Sequential(*layers)
-        self.input_src_txt_proj = nn.Sequential(*[
-            LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[0]),
-            LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[1]),
-            LinearLayer(hidden_dim, hidden_dim, layer_norm=True, dropout=input_dropout, relu=relu_args[2])
-        ][:n_input_proj]) 
         
         self.gate = nn.Parameter(torch.tensor(self.args.gate))
         
@@ -182,7 +174,7 @@ class EventSem(nn.Module):
     def generate_event_prior_mask(self, pseudo_event_spans, event_query_sim, video_length):
         """
         Args:
-            pseudo_event_spans:  [batch_size] 每个元素是形状为 [num_spans, 2] 的张量
+            pseudo_event_spans:  [batch_size]
             event_query_sim:  [batch_size, max_spans]
             video_length: 
             
@@ -503,7 +495,7 @@ class EventSem(nn.Module):
             
 
             if start_idx >= video_length or end_idx < 0 or start_idx >= end_idx:
-                adjusted_scores[i] = normalized_scores[i] * 0.01  # 无效proposal使用低权重
+                adjusted_scores[i] = normalized_scores[i] * 0.01 
                 continue
             
 
@@ -518,7 +510,7 @@ class EventSem(nn.Module):
         
         return adjusted_scores
 
-    def forward(self, src_txt, src_txt_mask, src_vid, src_vid_mask, vid, qid, semantic_t_feat,semantic_t_feat_mask,targets=None):
+    def forward(self, src_txt, src_txt_mask, src_vid, src_vid_mask,semantic_t_feat,semantic_t_feat_mask,vid=None, qid=None, targets=None):
         if vid is not None:
             _count = [v.count('_') for v in vid]
             if self.args.dset_name == 'hl':
@@ -532,10 +524,16 @@ class EventSem(nn.Module):
         
         if self.args.semantic_enhancement:
             src_txt_proj = self.input_txt_proj(src_txt)  # [bsz,8,256]
-            semantic_emb = self.input_sematic_txt_proj(semantic_t_feat)  # [bsz,,256]
-        
+            semantic_emb = self.input_sematic_txt_proj(semantic_t_feat)  # [bsz,L,256]
+            
             weight = torch.sigmoid(self.gate)
             src_txt = weight * semantic_emb + (1 - weight) * src_txt_proj 
+
+            # src_txt = torch.cat([src_txt_proj, semantic_emb], dim=1)  # [bsz, 8+L, 256]
+            
+            # Update src_txt_mask to match the new sequence length
+            # semantic_t_feat_mask = torch.ones(semantic_t_feat.shape[:-1], device=semantic_t_feat.device, dtype=src_txt_mask.dtype)
+            # src_txt_mask = torch.cat([src_txt_mask, semantic_t_feat_mask], dim=1)
         else:
             src_txt = self.input_txt_proj(src_txt)  # [bsz,8,256]
         # Add type embeddings
@@ -641,8 +639,8 @@ class EventSem(nn.Module):
                     # boundary = boundary.clone()
 
                     boundary = torch.cat([
-                        boundary[:, 0].unsqueeze(1) * -1, #预测的起始时间
-                        boundary[:, 1].unsqueeze(1)#预测的结束时间
+                        boundary[:, 0].unsqueeze(1) * -1,
+                        boundary[:, 1].unsqueeze(1)
                     ], dim=1)
                     boundary = boundary * point[:, 3, None].repeat(1, 2)
                     boundary = boundary + point[:, 0, None].repeat(1, 2) #
@@ -650,24 +648,20 @@ class EventSem(nn.Module):
                     # boundary = torch.clamp(boundary, min=0)
                     boundary = torch.cat((boundary, out_class[idx]), dim=-1) #[start_time, end_time, class_scores...]  
                     
-                    ###hj__start
-                    # 如果启用事件先验筛选，将其用于训练
                     if event_prior_mask is not None and self.args.use_event_prior_in_training:
-                        scores = out_class[idx, :, 0]#正类的置信度分数
+                        scores = out_class[idx, :, 0]
                         
-                        # 使用事件先验对分数进行调整
                         adjusted_scores = self.adjust_scores_with_event_prior(
                             scores, 
-                            boundary[:, :2],  # 仅使用边界坐标
+                            boundary[:, :2],  
                             event_prior_mask[idx] if event_prior_mask.dim() > 1 else event_prior_mask,
                             video_durations[idx]
                         )
-                        # 使用调整后的分数重新排序
+
                         _, inds = adjusted_scores.sort(descending=True)
                     else:
-                        # 使用原始分数排序
                         _, inds = out_class[idx, :, 0].sort(descending=True)
-                    #hj__end
+
                     boundary = boundary[inds[:]]
                     boudary_true = torch.clamp(boundary[:,:2], min=0,max=video_durations[idx])
                     boundarys_true.append(boudary_true)
@@ -683,42 +677,44 @@ class EventSem(nn.Module):
                 assert bs == 1, "batch size larger than 1 is not supported for inference"
                 out_class = out_class.sigmoid()
 
-                output["_out"] = dict(label=targets.get("label", [None])[0])
-                output["_out"]["video_msk"] = video_msk
-                output["_out"]["saliency"] = saliency_scores[0]
+                if targets is not None:
+                    
+                    output["_out"] = dict(label=targets.get("label", [None])[0])
+                    output["_out"]["video_msk"] = video_msk
+                    output["_out"]["saliency"] = saliency_scores[0]
 
-                if self.coord_head is not None:
-                    boundary = out_coord[0]
-                    boundary[:, 0] *= -1
-                    boundary *= point[:, 3, None].repeat(1, 2)
-                    boundary += point[:, 0, None].repeat(1, 2)  
-                    # boundary /= 1/self.args.clip_length
-                    boundary *= self.args.clip_length
-                    boundary = torch.cat((boundary, out_class[0]), dim=-1)  
-                    # print(targets)
-                    if targets:
-                        video_durations = [qi['duration'] for qi in targets['label']]
-                    else:
-                        video_durations = [150]
-                     # ===== 创新点1: 使用事件先验知识过滤proposal =====
-                    if event_prior_mask is not None and self.args.use_event_prior_filtering:
-                        # 使用 adjust_scores_with_event_prior 函数调整分数
-                        confidence = boundary[:, 2]  # 分类置信度分数
-                        adjusted_scores = self.adjust_scores_with_event_prior(
-                            confidence,  # 原始分数
-                            boundary[:, :2],  # 时间边界 [start_time, end_time]
-                            event_prior_mask,  # 事件先验掩码
-                            video_durations[0]
-                        )
-                        # 根据调整后的分数排序
-                        _, inds = adjusted_scores.sort(descending=True)
-                        boundary = boundary[inds[: self.max_num_moment]]
-                    else:
-                        # 原始分类得分排序方式
-                        _, inds = out_class[0, :, 0].sort(descending=True)
-                        boundary = boundary[inds[: self.max_num_moment]]
+                    if self.coord_head is not None:
+                        boundary = out_coord[0]
+                        boundary[:, 0] *= -1
+                        boundary *= point[:, 3, None].repeat(1, 2)
+                        boundary += point[:, 0, None].repeat(1, 2)  
+                        # boundary /= 1/self.args.clip_length
+                        boundary *= self.args.clip_length
+                        boundary = torch.cat((boundary, out_class[0]), dim=-1)  
+                        # print(targets)
+                        if targets:
+                            video_durations = [qi['duration'] for qi in targets['label']]
+                        else:
+                            video_durations = [150]
+                        
+                        if event_prior_mask is not None and self.args.use_event_prior_filtering:
+                            
+                            confidence = boundary[:, 2]
+                            adjusted_scores = self.adjust_scores_with_event_prior(
+                                confidence,
+                                boundary[:, :2], 
+                                event_prior_mask, 
+                                video_durations[0]
+                            )
+                        
+                            _, inds = adjusted_scores.sort(descending=True)
+                            boundary = boundary[inds[: self.max_num_moment]]
+                        else:
+                    
+                            _, inds = out_class[0, :, 0].sort(descending=True)
+                            boundary = boundary[inds[: self.max_num_moment]]
 
-                    output["_out"]["boundary"] = boundary
+                        output["_out"]["boundary"] = boundary
                     
         if self.training == True and self.args.use_neg:
             ### Neg Pairs ###
@@ -776,7 +772,7 @@ class SetCriterion(nn.Module):
         self.losses = losses
         self.saliency_margin = saliency_margin
         # self.device = args.device
-        self.device = 'cuda:1'
+        self.device = 'cuda'
 
         # foreground and background classification
         self.foreground_label = 0
@@ -809,225 +805,152 @@ class SetCriterion(nn.Module):
         return {"loss_label": losses}
 
     def compute_l1_loss(self, pred_spans, relevant_windows):
-        """
-        计算预测的时间片段边界和真实时间片段边界之间的 L1 损失。
-
-        Args:
-            pred_spans (torch.Tensor): 预测的时间片段边界，形状为 [bsz, n, 2]。
-            relevant_windows (torch.Tensor): 真实的时间片段边界，形状为 [bsz, m, 2]。
-
-        Returns:
-            torch.Tensor: 计算得到的 L1 损失。
-        """
         bsz, n, _ = pred_spans.shape
         _, m, _ = relevant_windows.shape
         device = pred_spans.device
         
-        # 初始化 L1 损失
+
         total_l1_loss = torch.tensor(0.0, device=device)
 
-        # 计算每个批次的匹配和损失
         for b in range(bsz):
-            # 当前批次的预测和真实片段
+
             pred = pred_spans[b]  # [n, 2]
             gt = relevant_windows[b]  # [m, 2]
             
-            # 如果只有一个真实片段，使用最小距离匹配
             if m == 1:
-                # 计算所有预测与唯一真实片段的L1距离
+                
                 distances = torch.sum(torch.abs(pred - gt), dim=1)  # [n]
-                # 找到最小距离的预测
+                
                 min_idx = torch.argmin(distances)
-                # 计算最小距离预测的L1损失
+               
                 l1_loss = F.l1_loss(pred[min_idx:min_idx+1], gt, reduction='mean')
             else:
-                # 对于多个片段，计算距离矩阵
+               
                 cost_matrix = torch.cdist(pred, gt, p=1)  # [n, m]
                 
-                # 使用匈牙利算法找到最佳匹配
-                # 转到CPU计算匹配
                 cpu_cost_matrix = cost_matrix.detach().cpu().numpy()
                 row_ind, col_ind = linear_sum_assignment(cpu_cost_matrix)
                 
-                # 转回设备
                 row_ind = torch.tensor(row_ind, device=device, dtype=torch.long)
                 col_ind = torch.tensor(col_ind, device=device, dtype=torch.long)
                 
-                # 计算匹配对的L1损失
                 l1_loss = F.l1_loss(pred[row_ind], gt[col_ind], reduction='mean')
             
-            # 累加batch损失
             total_l1_loss += l1_loss
 
-        # 返回平均 L1 损失
         return total_l1_loss / bsz
 
     def match_spans(self, pred_spans, relevant_windows):
-        """
-        优化后的匹配函数，减少不必要的CPU-GPU数据传输，但保持结果不变
-        
-        Args:
-            pred_spans (torch.Tensor): 预测的时间片段边界，形状为 [batch_size, num_proposals, 2]
-            relevant_windows (list): 真实的时间片段边界，长度为 batch_size，每个元素是一个二维列表
-            
-        Returns:
-            matched_pred_spans, matched_relevant_windows: 匹配后的预测和真实时间片段
-        """
         batch_size, num_proposals, _ = pred_spans.shape
         device = pred_spans.device
         
-        # 预分配输出张量列表
+
         matched_pred_spans = []
         matched_relevant_windows = []
 
-        # 对每个批次分别计算匹配
+
         for b in range(batch_size):
             if relevant_windows[b] is None or len(relevant_windows[b]) == 0:
-                # 如果没有真实标签，使用预测的第一个片段作为匹配
-                matched_pred = pred_spans[b, 0:1]  # 取第一个预测
-                matched_gt = torch.zeros_like(matched_pred)  # 创建零张量作为伪标签
+           
+                matched_pred = pred_spans[b, 0:1] 
+                matched_gt = torch.zeros_like(matched_pred)
                 
                 matched_pred_spans.append(matched_pred)
                 matched_relevant_windows.append(matched_gt)
                 continue
-            # 获取当前批次的预测和真实片段
+            
             pred = pred_spans[b]  # [num_proposals, 2]
             
-            # 确保真实片段在正确的设备上
             gt = torch.tensor(relevant_windows[b], dtype=torch.float32, device=device)  # [num_targets, 2]
             
-            # 如果只有一个真实片段，可以简化为最小距离匹配
             if gt.size(0) == 1:
-                # 计算L1距离
+               
                 distances = torch.sum(torch.abs(pred - gt.unsqueeze(0)), dim=1)
-                # 找到最小距离的索引
+               
                 best_idx = torch.argmin(distances)
                 
                 matched_pred_spans.append(pred[best_idx:best_idx+1])
                 matched_relevant_windows.append(gt)
             else:
-                # 对于多个片段，使用匈牙利算法
-                # 计算L1距离矩阵
+                
                 cost_matrix = torch.cdist(pred, gt, p=1)
                 
-                # 缓存原始形状以便后续使用
-                original_shape = cost_matrix.shape
-                
-                # 转换为numpy数组进行匈牙利算法计算
                 cost_numpy = cost_matrix.detach().cpu().numpy()
                 row_ind, col_ind = linear_sum_assignment(cost_numpy)
                 
-                # 将结果转回到GPU
                 row_ind = torch.tensor(row_ind, device=device, dtype=torch.long)
                 col_ind = torch.tensor(col_ind, device=device, dtype=torch.long)
                 
-                # 收集匹配的spans
                 matched_pred_spans.append(pred[row_ind])
                 matched_relevant_windows.append(gt[col_ind])
 
-        # 根据实际匹配数调整输出格式
         max_matches = max(len(spans) for spans in matched_pred_spans)
         
-        # 填充张量以便能够堆叠
         for i in range(batch_size):
             curr_len = len(matched_pred_spans[i])
             if curr_len < max_matches:
-                # 如果当前匹配少于最大匹配数，填充重复的最后一个匹配
+                
                 padding = matched_pred_spans[i][-1:].repeat(max_matches - curr_len, 1)
                 matched_pred_spans[i] = torch.cat([matched_pred_spans[i], padding], dim=0)
                 
                 padding = matched_relevant_windows[i][-1:].repeat(max_matches - curr_len, 1)
                 matched_relevant_windows[i] = torch.cat([matched_relevant_windows[i], padding], dim=0)
         
-        # 堆叠为张量
+      
         matched_pred_spans = torch.stack(matched_pred_spans, dim=0)
         matched_relevant_windows = torch.stack(matched_relevant_windows, dim=0)
         
         return matched_pred_spans, matched_relevant_windows
     
     def temporal_iou(self, spans1, spans2):
-        """
-        计算两个时间片段集合之间的 IoU 和并集。
-
-        Args:
-            spans1: (bsz, N, 2) torch.Tensor, 每行定义一个时间片段 [start, end]
-            spans2: (bsz, M, 2) torch.Tensor, 每行定义一个时间片段 [start, end]
-
-        Returns:
-            iou: (bsz, N, M) torch.Tensor, 两个时间片段之间的 IoU
-            union: (bsz, N, M) torch.Tensor, 两个时间片段之间的并集长度
-        """
-        # 计算交集
+        
         inter_start = torch.max(spans1[:, :, None, 0], spans2[:, None, :, 0])  # (bsz, N, M)
         inter_end = torch.min(spans1[:, :, None, 1], spans2[:, None, :, 1])    # (bsz, N, M)
         intersection = (inter_end - inter_start).clamp(min=0)                  # (bsz, N, M)
 
-        # 计算每个时间片段的长度
+
         len1 = (spans1[:, :, 1] - spans1[:, :, 0]).clamp(min=0)                # (bsz, N)
         len2 = (spans2[:, :, 1] - spans2[:, :, 0]).clamp(min=0)                # (bsz, M)
 
-        # 计算并集
+
         union = len1[:, :, None] + len2[:, None, :] - intersection             # (bsz, N, M)
 
-        # 计算 IoU
         iou = intersection / union.clamp(min=1e-6)                            # (bsz, N, M)
         return iou, union
 
     def generalized_temporal_iou(self, spans1, spans2):
-        """
-        计算 Generalized Temporal IoU。
 
-        Args:
-            spans1: (bsz, N, 2) torch.Tensor, 每行定义一个时间片段 [start, end]
-            spans2: (bsz, M, 2) torch.Tensor, 每行定义一个时间片段 [start, end]
-
-        Returns:
-            giou: (bsz, N, M) torch.Tensor, Generalized IoU
-        """
         spans1 = spans1.float()
         spans2 = spans2.float()
 
-        # 确保时间片段的结束时间大于等于开始时间
-        assert (spans1[:, :, 1] >= spans1[:, :, 0]).all(), "spans1 的结束时间必须大于等于开始时间"
-        assert (spans2[:, :, 1] >= spans2[:, :, 0]).all(), "spans2 的结束时间必须大于等于开始时间"
 
-        # 计算 IoU 和并集
-        iou, union = self.temporal_iou(spans1, spans2)  # 调用 temporal_iou 函数
+        iou, union = self.temporal_iou(spans1, spans2) 
 
-        # 计算包围区域的长度
         enclosing_start = torch.min(spans1[:, :, None, 0], spans2[:, None, :, 0])  # (bsz, N, M)
         enclosing_end = torch.max(spans1[:, :, None, 1], spans2[:, None, :, 1])    # (bsz, N, M)
         enclosing_area = (enclosing_end - enclosing_start).clamp(min=0)            # (bsz, N, M)
 
-        # 计算 Generalized IoU
         giou = iou - (enclosing_area - union) / enclosing_area.clamp(min=1e-6)     # (bsz, N, M)
         return giou
 
     def loss_span(self, outputs, targets, log=True):
-        """
-        计算 L1 损失。
-        """
-        # 获取预测的时间片段和真实时间片段
+        
+       
         pred_spans = outputs["pred_spans_true"][:,:,:2]
         relevant_windows = [qi["relevant_windows"] for qi in targets["label"]]
 
-        # 匹配预测时间片段和真实时间片段
         matched_pred_spans, matched_relevant_windows = self.match_spans(pred_spans, relevant_windows)
 
-        # 计算 L1 损失
         loss_l1 = self.compute_l1_loss(matched_pred_spans, matched_relevant_windows)
         giou = self.generalized_temporal_iou(matched_pred_spans, matched_relevant_windows)
-        # loss_giou = (1-giou).mean() 
-        # 计算对角线元素的平均值作为批次的GIoU
+      
         batch_size = matched_pred_spans.size(0)
         min_size = min(matched_pred_spans.size(1), matched_relevant_windows.size(1))
         
-        # 获取对角线元素
         batch_indices = torch.arange(batch_size, device=pred_spans.device)
         match_indices = torch.arange(min_size, device=pred_spans.device)
         diagonal_giou = giou[batch_indices[:, None], match_indices[None, :], match_indices[None, :]]
         
-        # 计算平均GIoU损失
         loss_giou = (1 - diagonal_giou).mean()
         
         return {"loss_l1": loss_l1, "loss_giou": loss_giou}

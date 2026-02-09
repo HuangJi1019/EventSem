@@ -1,5 +1,5 @@
 
-# EventSem: Event-Aware Multi-Source Semantic Enhancement for Video Moment Retrieval
+# EventSem: Plug-and-Play Multi-Source Semantic Enhancement and Event-Aware Temporal Grounding for Video Moment Retrieval
 
 
 ## 🎯 Overview
@@ -17,7 +17,7 @@ Our framework introduces two plug-and-play modules that can enhance any proposal
 
 - **🔥 State-of-the-art Performance**: Achieves new SOTA on TACoS, Charades-STA, and QVHighlights
 - **🔧 Plug-and-Play**: Seamlessly integrates into any proposal-based VMR architecture
-- **💪 Robust**: Superior performance on linguistically diverse queries
+- **💪 Datasets and Robust**: we introduce a new SRE dataset. Superior performance on this SRE dataset.
 
 
 ## 🛠️ Installation
@@ -45,14 +45,43 @@ pip install -r requirements.txt
 
 ### Download Datasets
 ```bash
-Download QVHighligths, Charades-STA, and TACoS features, please follow the instruction of [CG-DETR]((https://github.com/wjun0830/CGDETR/)
+Download QVHighligths, Charades-STA, and TACoS features, please follow the instruction of CG-DETR
+```
+### Linguistic Knowledge Datasets
+```bash
+run code linguistic_knowledge.py to generate the linguistic knowledge
+```
+The datasets file structure would be:
+```
+--datasets
+    --charades_sta
+        --clip_features
+        --clip_text_features
+        --slowfast_features
+    --qvhighlight
+        --clip_features
+        --clip_text_features
+        --slowfast_features
+    --tacos
+        --clip_features
+        --clip_text_features
+        --slowfast_features
+    --semantic_embeddings 
+        --charades-sta-token-level
+        --qv_highlight_token_level
+        --tacos-token-level
 ```
 
-### Linguistically Diverse Test Sets
-Our constructed test sets with semantically equivalent query reformulations:
+### Semantic Robustness Evaluation test sets
+We rewrite original queries using T5-based paraphrasers with semantic similarity filtering (cosine similarity $\geq$ 0.85) to preserve meaning. We call this the SRE dataset. We report the Charades-STA-SRE and the TACoS-SRE datasets.
+
+For the Charades-STA-SRE, you can find it in
 ```bash
-# Download our semantic robustness evaluation sets
-# to do 
+data/charades_sta/charades_sta_SRE_test_tvr_format.jsonl 
+```
+For the TACoS-SRE, you can find it in
+```bash
+data/tacos/test_SRE.jsonl 
 ```
 
 ## 🔧 Training
@@ -89,32 +118,20 @@ bash EventSem/scripts/TACoS/train.sh
 ```bash
 # Evaluate on TACoS
 bash Event/scripts/inference.sh data/MR.py results/TACoS/model_best.ckpt 'val'
-
-# Evaluate on all datasets
-bash scripts/eval_all_datasets.sh
 ```
 
 ### Semantic Robustness Evaluation
 ```bash
 # Evaluate on linguistically diverse test sets
-replace the original test file to linguistically diverse test sets
+replace the original test file to Semantic Robustness Evaluation test sets
 ```
 
 
 
 ## 📈 Model Zoo
-We provide multiple checkpoints and training logs here. Configuration can be find in each opt.json file.
-|Datasets |Model file|
-|-------|-------|
-|QVHighlights| -|
-|Charades(VGG)| -|
-|Charades(SF+C)| -|
-|TACoS| -|
-
-
-
+We will provide it after the paper is accepted.
 
 ## 🙏 Acknowledgments
 
-- Built upon [QD-DETR](https://github.com/wjun0830/QD-DETR) and [TR-DETR](https://github.com/microsoft/VideoX)
+- Built upon QD-DETR,TR-DETR, and FlashVTG
 - Thanks to the creators of TACoS, Charades-STA, and QVHighlights datasets

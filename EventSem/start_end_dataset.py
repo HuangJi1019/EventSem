@@ -165,7 +165,6 @@ class StartEndDataset(Dataset):
 
     def _load_model_inputs(self, meta):
         model_inputs = dict()
-
         if self.use_glove:
             model_inputs["query_feat"] = self.get_query(meta["query"])
         else:
@@ -464,6 +463,7 @@ class StartEndDataset(Dataset):
                     q_feat = l2_normalize_np_array(q_feat)
                 if self.txt_drop_ratio > 0:
                     q_feat = self.random_drop_rows(q_feat)
+                    
         return torch.from_numpy(q_feat)  # (D, ) or (Lq, D)
 
     def _get_semantic_query_feat_by_qid(self,qid):

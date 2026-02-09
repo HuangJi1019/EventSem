@@ -33,6 +33,8 @@ torch.backends.cudnn.allow_tf32 = False
 torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
+
+
 def set_seed(seed, use_cuda=True):
     random.seed(seed)
     np.random.seed(seed)
@@ -61,7 +63,7 @@ def train_epoch(model, criterion, train_loader, optimizer, opt, epoch_i, tb_writ
         targets["fps"] = torch.full((256,), 1/opt.clip_length).to(opt.device) # if datasets is qv, fps is 0.5
         # print(model_inputs["semantic_t_feat"].shape)
         outputs = model(**model_inputs, targets=targets)
-        
+    
         loss_dict = criterion(batch, outputs, targets)
         loss_dict = {k: v for k, v in outputs.items() if 'loss' in k}
 
@@ -73,14 +75,7 @@ def train_epoch(model, criterion, train_loader, optimizer, opt, epoch_i, tb_writ
 
         optimizer.zero_grad()
         
-        losses.backward()
-        # if model.score_weight.grad is not None:
-        #     score_weight_grads.append(model.score_weight.grad.item())
-        # if model.event_sim_threshold.grad is not None:
-        #     event_sim_threshold_grads.append(model.event_sim_threshold.grad.item())
-        # for name, param in model.named_parameters():
-        #     if param.grad is not None:
-        #         print(f"{name} grad norm: {param.grad.norm()}")    
+        losses.backward()   
 
         if opt.grad_clip > 0:
             nn.utils.clip_grad_norm_(
@@ -91,20 +86,6 @@ def train_epoch(model, criterion, train_loader, optimizer, opt, epoch_i, tb_writ
         
     
         optimizer.step()
-        # 每个batch打印梯度信息
-        # if epoch_i % 1 == 0:
-        #     avg_score_weight_grad = np.mean(score_weight_grads) if score_weight_grads else 0
-        #     avg_threshold_grad = np.mean(event_sim_threshold_grads) if event_sim_threshold_grads else 0
-            
-        #     logger.info(f'Epoch [{epoch_i}][{batch_idx}/{len(train_loader)}] '
-        #                f'score_weight_grad: {avg_score_weight_grad} '
-        #                f'event_sim_threshold_grad: {avg_threshold_grad} '
-        #                f'score_weight: {model.score_weight.item()} '
-        #                f'event_sim_threshold: {model.event_sim_threshold.item()}')
-            
-        #     # 清空梯度统计
-        #     score_weight_grads = []
-        #     event_sim_threshold_grads = []
 
         
         loss_dict["weighted_loss_overall"] = float(losses)  # for logging only
@@ -167,12 +148,12 @@ def train(model, criterion, optimizer, lr_scheduler, train_dataset, val_dataset,
     )
     
     for epoch_i in trange(start_epoch, opt.n_epoch, desc="Epoch"):
-        if epoch_i > -1:
-            losses, iteration = train_epoch(
-                model, criterion, train_loader, optimizer, opt, epoch_i, tb_writer
-            )
-            lr_scheduler.step()
-            print(f"[Epoch {epoch_i:3d}] lr = {optimizer.param_groups[0]['lr']:.2e}")
+        # if epoch_i > -1:
+        #     losses, iteration = train_epoch(
+        #         model, criterion, train_loader, optimizer, opt, epoch_i, tb_writer
+        #     )
+        #     lr_scheduler.step()
+        #     print(f"[Epoch {epoch_i:3d}] lr = {optimizer.param_groups[0]['lr']:.2e}")
         eval_epoch_interval = opt.eval_epoch
 
         if opt.eval_path is not None and (epoch_i + 1) % eval_epoch_interval == 0:
@@ -445,6 +426,8 @@ def start_training():
 
     model, criterion, optimizer, lr_scheduler = setup_model(opt)
     logger.info(f"Model {model}")
+    
+
     params = []
     logger.info("Learnable Parameters:")
     for name, param in model.named_parameters():
@@ -454,12 +437,10 @@ def start_training():
 
     train_params = sum(p.numel() for p in params)
     total_params = sum(p.numel() for p in model.parameters())
-    ratio = round(train_params / total_params * 100, 3)
-    param = round(train_params / 1024 / 1024, 3)
+    ratio = round(train_params / total_params * 100, 5)
+    param = round(train_params, 5)
     logger.info(f"Learnable Parameters: {param}M ({ratio}%)")
-
     logger.info("Start Training...")
-
     # For tvsum dataset, use train_hl function
     if opt.dset_name in ['tvsum', 'youtube_uni']:
         train_hl(model, criterion, optimizer, lr_scheduler, train_dataset, eval_dataset, opt)

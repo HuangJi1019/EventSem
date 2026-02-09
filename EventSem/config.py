@@ -27,7 +27,7 @@ class BaseOptions(object):
                             help="how many training and eval data to use. 1.0: use all, 0.1: use 10%."
                                  "Use small portion for debug purposes. Note this is different from --debug, "
                                  "which works by breaking the loops, typically they are not used together.")
-        parser.add_argument("--device", type=int, default=1, help="0 cuda, -1 cpu")
+        parser.add_argument("--device", type=int, default=0, help="0 cuda, -1 cpu")
         parser.add_argument("--lr", type=float, default=3e-4, help="learning rate")
         parser.add_argument("--num_workers", type=int, default=1,
                             help="num subprocesses used to load the data, 0: use main process")
@@ -35,7 +35,7 @@ class BaseOptions(object):
         parser.add_argument("--n_epoch", type=int, default=300, help="number of epochs to run")
         parser.add_argument("--max_es_cnt", type=int, default=30,
                             help="number of epochs to early stop, use -1 to disable early stop")
-        parser.add_argument("--resume", type=str, default=None,
+        parser.add_argument("--resume", type=str, default="/users/40448930/ji_code/work2/EventSem/results/tacos/EventSem/model_best.ckpt",
                             help="checkpoint path to resume or evaluate, without --resume_all this only load weights")
         parser.add_argument("--resume_all", action="store_true",
                             help="if --resume_all, load optimizer/scheduler/epoch as well")
@@ -162,9 +162,9 @@ class BaseOptions(object):
                             help="weight for span loss, set to 0 will ignore")
         parser.add_argument("--lw_sal", type=float, default=0.1,
                             help="weight for span loss, set to 0 will ignore")
-        parser.add_argument("--lw_l1", type=float, default=0.1,
+        parser.add_argument("--lw_l1", type=float, default=0,
                             help="weight for mr loss, set to 0 will ignore")
-        parser.add_argument("--lw_giou", type=float, default=1,
+        parser.add_argument("--lw_giou", type=float, default=0,
                             help="weight for mr loss, set to 0 will ignore")
         
         parser.add_argument("--lw_saliency", type=float, default=0.8,
@@ -193,8 +193,8 @@ class BaseOptions(object):
         
         
         parser.add_argument("--max_event_spans", type=int, default=50) 
-        parser.add_argument("--use_event_prior_filtering", type=bool,default=False)    
-        parser.add_argument("--use_event_prior_in_training", type=bool,default=False)
+        parser.add_argument("--use_event_prior_filtering", type=bool,default=True)    
+        parser.add_argument("--use_event_prior_in_training", type=bool,default=True)
         parser.add_argument("--semantic_enhancement",type=bool,default=True)
         self.parser = parser
 
@@ -261,13 +261,13 @@ class BaseOptions(object):
         opt.train_log_filepath = os.path.join(opt.results_dir, self.train_log_filename)
         opt.eval_log_filepath = os.path.join(opt.results_dir, self.eval_log_filename)
         opt.tensorboard_log_dir = os.path.join(opt.results_dir, self.tensorboard_log_dir)
-        # 修改 device 设置
+
         if isinstance(opt.device, list):
-            # 多 GPU 设置
+
             opt.device = [torch.device(f"cuda:{d}") for d in opt.device]
-            opt.main_device = opt.device[0]  # 主 GPU
+            opt.main_device = opt.device[0] 
         else:
-            # 单 GPU 或 CPU 设置
+
             opt.device = torch.device(f"cuda:{opt.device}" if opt.device >= 0 else "cpu")
             opt.main_device = opt.device
         opt.pin_memory = not opt.no_pin_memory

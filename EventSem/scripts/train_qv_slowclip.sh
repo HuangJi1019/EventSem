@@ -1,6 +1,4 @@
-#!/bin/bash
-. /opt/gridware/depots/54e7fb3c/el8/pkg/apps/anaconda3/2024.06/bin/etc/profile.d/conda.sh
-conda activate FlashVTG
+
 dset_name=hl
 ctx_mode=video_tef
 v_feat_types=clip_slowfast
@@ -9,13 +7,12 @@ results_root=results_all_qvhighlight
 exp_id=qv_slowclip_512
 
 ######## data paths
-train_path=/users/40448930/ji_code/FlashVTG/data/highlight_train_release.jsonl
-# eval_path=data/highlight_val_release.jsonl
-eval_path=/users/40448930/ji_code/FlashVTG/data/highlight_val_release.jsonl
+train_path=data/highlight_train_release.jsonl
+eval_path=data/highlight_val_release.jsonl
 eval_split_name=val
 
 ######## setup video+text features
-feat_root=/users/40448930/ji_code/FlashVTG/datasets/qvhighlight
+feat_root=datasets/qvhighlight
 
 # video features
 v_feat_dim=0
@@ -60,7 +57,7 @@ lw_sal=0.1
 lw_saliency=0.8
 label_loss_coef=4
 
-PYTHONPATH=$PYTHONPATH:. python /users/40448930/ji_code/FlashVTG/FlashVTG/train.py \
+PYTHONPATH=$PYTHONPATH:. python EventSem/EventSem/train.py \
 data/MR.py \
 --dset_name ${dset_name} \
 --ctx_mode ${ctx_mode} \
@@ -98,19 +95,15 @@ data/MR.py \
 --use_SRM \
 --clip_length 2.0 \
 --max_event_spans 40 \
---lw_l1 0.1 \
---lw_giou 0.1 \
 --score_weight 0.1 \
 --event_sim_threshold 0.15 \
 --lr 4e-4 \
 --span_width_threshold 0.2 \
---semantic_t_feat_dir "/users/40448930/ji_code/FlashVTG/datasets/semantic_embeddings/qv_highlight_token_level_new" \
+--semantic_t_feat_dir "datasets/semantic_embeddings/qv_highlight_token_level_new" \
 --n_semantic_proj 6 \
 --gate -2 \
 --sim_sharpness 5 \
---resume "/users/40448930/ji_code/FlashVTG/results_all_qvhighlight/hl-video_tef-qv_slowclip_512-2025-06-23-00-29-10/model_best.ckpt" \
-# --resume_all \
-# --resume "/users/40448930/ji_code/FlashVTG/results_all_qvhighlight/hl-video_tef-qv_slowclip_512-2025-06-02-20-38-00/model_best.ckpt" \
+
 
 ${@:1}
 # 18,6,21

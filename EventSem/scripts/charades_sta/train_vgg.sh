@@ -6,12 +6,12 @@ results_root=results_charades_VGG
 exp_id=demo
 
 ######## data paths
-train_path=/users/40448930/ji_code/FlashVTG/data/charades_sta/charades_sta_train_tvr_format.jsonl
-eval_path=/users/40448930/ji_code/FlashVTG/data/charades_sta/charades_sta_test_tvr_format.jsonl
+train_path=data/charades_sta/charades_sta_train_tvr_format.jsonl
+eval_path=data/charades_sta/charades_sta_test_tvr_format.jsonl
 eval_split_name=val
 
 ######## setup video+text features
-feat_root=/users/40448930/ji_code/FlashVTG/datasets/charades_sta
+feat_root=datasets/charades_sta
 
 # video features
 v_feat_dim=0
@@ -56,7 +56,7 @@ lw_saliency=0.8
 label_loss_coef=0.1
 nms_type=normal
 
-PYTHONPATH=$PYTHONPATH:. python FlashVTG/train.py \
+PYTHONPATH=$PYTHONPATH:. python EventSem/train.py \
 data/MR.py \
 --dset_name ${dset_name} \
 --ctx_mode ${ctx_mode} \
@@ -97,15 +97,8 @@ data/MR.py \
 --num_dummies ${num_dummies} \
 --score_weight 0.5 \
 --event_sim_threshold 0.25 \
---lw_l1 0.1 \
---lw_giou 1 \
 --max_event_spans 40 \
 --n_semantic_proj 3 \
---semantic_t_feat_dir "/users/40448930/ji_code/FlashVTG/datasets/semantic_embeddings/charades-sta-token-level" \
-# --resume "/users/40448930/ji_code/FlashVTG/results_charades_VGG/charadesSTA-video_tef-demo-2025-06-25-22-39-31/model_best.ckpt" \
-# --resume_all \
-# --n_semantic_proj \
-# --semantic_enhancement False \
-# --use_event_prior_filtering False \
-# --use_event_prior_in_training False \
+--semantic_t_feat_dir "datasets/semantic_embeddings/charades-sta-token-level" \
+
 ${@:1}

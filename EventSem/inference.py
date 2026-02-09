@@ -32,7 +32,7 @@ logging.basicConfig(
     level=logging.INFO,
 )
 from EventSem.model import build_model1
-
+from thop import profile
 
 def post_processing_mr_nms(mr_res, nms_thd, max_before_nms, max_after_nms, nms_type):
     mr_res_after_nms = []
@@ -234,6 +234,9 @@ def compute_hl_results(
 def compute_mr_results(
     model, eval_loader, opt, epoch_i=None, criterion=None, tb_writer=None
 ):
+    torch.cuda.reset_peak_memory_stats("cuda")
+    import time
+    start_time = time.time()
     model.eval()
     if criterion:
         assert eval_loader.dataset.load_labels
@@ -245,8 +248,7 @@ def compute_mr_results(
     mr_res = []
     for batch in tqdm(eval_loader, desc="compute st ed scores"):
         query_meta = batch[0]
-        # logger.info(f"targets:\n{pprint.pformat(batch[1], indent=4)}")
-        # exit()
+
         model_inputs, targets = prepare_batch_inputs(batch[1], opt.device, non_blocking=opt.pin_memory)
         
         if targets is not None:
@@ -255,7 +257,51 @@ def compute_mr_results(
         else:
             targets = {}
         outputs = model(**model_inputs, targets=targets)
+        end_time = time.time()
+        print(f"inference time: {end_time-start_time:.5f}")
+        peak_memory_bytes = torch.cuda.max_memory_allocated("cuda")
+        peak_memory_mb = peak_memory_bytes / (1024 * 1024)
 
+        print(f"推理峰值显存占用: {peak_memory_mb:.5f} MB")
+    
+        thop_inputs_full = (
+            model_inputs['src_txt'],               # 1. src_txt (Tensor)
+            model_inputs['src_txt_mask'],          # 2. src_txt_mask (Tensor)
+            model_inputs['src_vid'],               # 3. src_vid (Tensor)
+            model_inputs['src_vid_mask'],          # 4. src_vid_mask (Tensor)
+            model_inputs['semantic_t_feat'],       # 7. semantic_t_feat (Tensor)
+            model_inputs['semantic_t_feat_mask'],  # 8. semantic_t_feat_mask (Tensor)
+            None,                                   # 9. targets (占位，原为 Dict/None)
+            None,
+            None
+        )
+
+
+        # --- 2. 计算 FLOPs ---
+
+        # thop 期望的输入格式是 (args, kwargs) 的元组，
+        # 当所有参数都是关键字参数时，args 为空元组 ()，kwargs 是您的字典。
+        # thop 的 profile 函数在处理 kwargs 时通常要求 inputs=(kwargs,)
+        try:
+            # 完整模型 FLOPs 计算
+            # 注意：这里的 inputs 是一个包含字典的元组
+            flops_full, params_full = profile(model, inputs=thop_inputs_full, verbose=False)
+
+            print("\n--- FLOPs compute results (Batch Size = 1) ---")
+            print(f"all FLOPs (Full Model): {flops_full / 1e9:.5f} G")
+            # print(f"full (Params): {params_full / 1e6:.5f} M")
+            print(f"full (Params): {params_full:.5f} M")
+            print("------------------------------------------\n")
+
+        except Exception as e:
+            print(f"FLOPs fail: {e}")
+            pass
+
+        
+        exit() # 退出，只计算一次 FLOPs
+
+
+        
         if opt.span_loss_type == "l1":
             scores = outputs["_out"]["boundary"][:, 2]
             pred_spans = outputs["_out"]["boundary"][:, :2].unsqueeze(0)

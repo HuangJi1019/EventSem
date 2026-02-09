@@ -8,12 +8,12 @@ exp_id=50005
 
 ######## data paths
 train_path=data/tacos/train.jsonl
-# eval_path=data/tacos/test.jsonl
-eval_path=data/tacos/val_ge.jsonl
+eval_path=data/tacos/test_SRE.jsonl
+ # eval_path=data/tacos/test.jsonl
 eval_split_name=val
 
 ######## setup video+text features
-feat_root=/users/40448930/ji_code/FlashVTG/datasets/tacos
+feat_root=datasets/tacos
 
 # video features
 v_feat_dim=0
@@ -38,10 +38,10 @@ fi
 
 
 #### training
-bsz=32
+bsz=32 #32
 max_v_l=-1
 max_q_l=-1
-eval_epoch=3
+eval_epoch=1
 weight_decay=0.0001
 eval_bsz=1
 
@@ -60,7 +60,7 @@ lw_saliency=0.8
 label_loss_coef=4
 nms_type=normal
 
-PYTHONPATH=$PYTHONPATH:. python FlashVTG/train.py \
+PYTHONPATH=$PYTHONPATH:. python EventSem/train.py \
 data/MR.py \
 --dset_name ${dset_name} \
 --ctx_mode ${ctx_mode} \
@@ -100,11 +100,7 @@ data/MR.py \
 --lr 3e-4 \
 --dropout 0 \
 --score_weight 0.5 \
---max_event_spans 50 \
---lw_l1 0.05 \
 --event_sim_threshold 0.25 \
---semantic_t_feat_dir "/users/40448930/ji_code/FlashVTG/datasets/semantic_embeddings/tacos-token-level" \
+--semantic_t_feat_dir "datasets/semantic_embeddings/tacos-token-level" \
 --n_semantic_proj 2 \
---resume "/users/40448930/ji_code/FlashVTG/results_tacos/tacos-video_tef-50005-2025-07-05-12-02-40/model_best.ckpt" \
-# --resume_all \
 ${@:1}

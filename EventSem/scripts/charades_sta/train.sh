@@ -13,7 +13,7 @@ eval_path=data/charades_sta/charades_sta_test_tvr_format.jsonl
 eval_split_name=val
 
 ######## setup video+text features
-feat_root=/data/Ji_code/FlashVTG/datasets/charades_sta
+feat_root=datasets/charades_sta
 
 
 # video features
@@ -103,15 +103,11 @@ data/MR.py \
 --lr 5e-4 \
 --score_weight 0.5 \
 --event_sim_threshold 0.3 \
---lw_l1 0.1 \
---lw_giou 1.0 \
 --max_event_spans 40 \
 --n_semantic_proj 3 \
 --span_width_threshold 0.5 \
---semantic_t_feat_dir "/data/Ji_code/FlashVTG/datasets/semantic_embeddings/charades-sta-token-level" \
+--semantic_t_feat_dir "datasets/semantic_embeddings/charades-sta-token-level" \
 --gate 1 \
-# --resume "/data/Ji_code/FlashVTG/results_charades_sta_slowfast_clip/charadesSTA-video_tef-demo-2025-07-10-11-27-29/model_best.ckpt" \
-# --resume_all \
-# --resume "results/charadesSTA-video_tef-demo-2025-05-11-12-03-41/model_best.ckpt" \
+
 
 ${@:1}
