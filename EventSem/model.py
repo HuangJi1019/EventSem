@@ -140,7 +140,6 @@ class EventSem(nn.Module):
         self.x = nn.Parameter(torch.tensor(0.5))
         
         self.event_proj = nn.Linear(hidden_dim, hidden_dim)
-        self.query_proj = nn.Linear(hidden_dim, hidden_dim)
 
         self.saliency_token = nn.Parameter(torch.zeros(1, 1, hidden_dim))
         nn.init.normal_(self.saliency_token, std=0.02)
@@ -253,7 +252,7 @@ class EventSem(nn.Module):
         query_pooled = torch.mean(query_emb, dim=1)  # [batch_size, hidden_dim]
         
         event_proj = self.event_proj(event_features)  # [batch_size, num_spans, hidden_dim]
-        query_proj = self.query_proj(query_pooled).unsqueeze(1)  # [batch_size, 1, hidden_dim]
+        query_proj = self.event_proj(query_pooled).unsqueeze(1)  # [batch_size, 1, hidden_dim]
         
         event_norm = torch.norm(event_proj, dim=2, keepdim=True)
         query_norm = torch.norm(query_proj, dim=2, keepdim=True)
