@@ -64,5 +64,5 @@ after generation by inspecting each pair.
 
 ## Generation prompt
 
-The prompt used to generate the reformulations (Flan-T5-XL, eight candidates per query) is
+The prompt used to generate the reformulations (the T5-based paraphrase model `chatgpt_paraphraser_on_T5_base`, eight candidates per query) is
 given verbatim in `docs/sre_rewrite_prompt.txt`, with `{q}` standing for the original query.
