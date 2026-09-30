@@ -82,6 +82,8 @@ We rewrite original queries using T5-based paraphrasers with semantic similarity
 | Charades-STA-SRE | `data/charades_sta/charades_sta_SRE_test_tvr_format.jsonl` |
 | TACoS-SRE | `data/tacos/test_SRE.jsonl` |
 
+The rewriting prompt and the annotation guideline used to verify the SRE pairs are in `docs/sre_rewrite_prompt.txt` and `docs/annotation_guideline.md`.
+
 ## 🔧 Training
 
 ### TACoS

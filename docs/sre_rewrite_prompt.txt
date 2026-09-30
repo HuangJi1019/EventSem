@@ -1,0 +1,4 @@
+Rewrite the sentence using different words and a different grammatical structure, without changing what it describes.
+Rules: do not add or remove any action; do not change which object or person is involved; keep every ordinal exactly as it is (first stays first, 2nd stays 2nd); keep every number and quantity; keep every negation; keep the order of events.
+sentence: {q}
+rewrite:
