@@ -48,6 +48,20 @@ adjudicated by a large language model that is given the definition above, both q
 annotators' labels, and asked to return one of the three labels with a one-sentence
 justification. No third human annotator is involved.
 
+## Automatic filtering before annotation
+
+Generated candidates pass through three mechanical steps before any human involvement:
+
+1. Candidates identical to the original after lower-casing and punctuation stripping, and
+   empty candidates, are discarded.
+2. The cosine similarity between the CLIP text embeddings of the original and the candidate
+   must be at least 0.85. This is a coarse guard against off-topic rewrites, not evidence of
+   semantic equivalence.
+3. Where several of the eight candidates survive for one query, one is retained.
+
+Variation types (synonym substitution, paraphrase, hypernym substitution, mixed) are assigned
+after generation by inspecting each pair.
+
 ## Generation prompt
 
 The prompt used to generate the reformulations (Flan-T5-XL, eight candidates per query) is
