@@ -4,8 +4,8 @@ dset_name=charadesSTA
 ctx_mode=video_tef
 v_feat_types=slowfast_clip
 t_feat_type=clip 
-results_root=results_charades_sta_slowfast_clip
-exp_id=demo
+results_root=results_charades_sta
+exp_id=eventsem
 
 ######## data paths
 train_path=data/charades_sta/charades_sta_train_tvr_format.jsonl
@@ -41,7 +41,7 @@ fi
 bsz=128
 max_v_l=-1
 max_q_l=32
-eval_epoch=1
+eval_epoch=3
 weight_decay=0.0001
 eval_bsz=1
 
@@ -58,11 +58,13 @@ lw_reg=1
 lw_cls=5
 lw_sal=0.01
 lw_saliency=0.8
-lw_dummy=10
-lw_confidence=1
 label_loss_coef=0.1
 nms_type=normal
 
+# You can override GPU with CUDA_VISIBLE_DEVICES externally.
+if [[ -z "${CUDA_VISIBLE_DEVICES+x}" ]]; then
+  export CUDA_VISIBLE_DEVICES=0
+fi
 PYTHONPATH=$PYTHONPATH:. python EventSem/train.py \
 data/MR.py \
 --dset_name ${dset_name} \
@@ -85,6 +87,7 @@ data/MR.py \
 --n_epoch 200 \
 --lr_drop 90 \
 --eval_epoch ${eval_epoch} \
+--num_workers 4 \
 --wd ${weight_decay} \
 --eval_bsz ${eval_bsz} \
 --lw_reg ${lw_reg} \
@@ -102,12 +105,12 @@ data/MR.py \
 --clip_length 1 \
 --lr 5e-4 \
 --score_weight 0.5 \
---event_sim_threshold 0.3 \
---max_event_spans 40 \
+--event_sim_threshold 0.15 \
+--max_event_spans 10 \
 --n_semantic_proj 3 \
 --span_width_threshold 0.5 \
---semantic_t_feat_dir "datasets/semantic_embeddings/charades-sta-token-level" \
---gate 1 \
-
-
-${@:1}
+--semantic_t_feat_dir "datasets/semantic_embeddings/charades-sta-token-level-v2" \
+--gate -2.0 \
+--seed 2026 \
+--device 0 \
+"$@"

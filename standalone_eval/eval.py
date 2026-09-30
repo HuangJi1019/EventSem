@@ -160,7 +160,11 @@ def eval_moment_retrieval(submission, ground_truth, verbose=True):
             dummy_dict['average'] = 0.
             ret_metrics[name] = {"MR-mAP": dummy_dict, "MR-R1": dummy_dict}
         else:
-            iou_thd2average_precision = compute_mr_ap(_submission, _ground_truth, num_workers=8, chunksize=50)
+            # EVAL_MR_WORKERS overrides the pool size (default 8 = unchanged). The pool forks the
+            # caller, which during training holds the whole preloaded eval set; 1 avoids the fork.
+            iou_thd2average_precision = compute_mr_ap(_submission, _ground_truth,
+                                                      num_workers=int(os.environ.get("EVAL_MR_WORKERS", "8")),
+                                                      chunksize=50)
             iou_thd2recall_at_one, miou_at_one = compute_mr_r1(_submission, _ground_truth)
             ret_metrics[name] = {"MR-mIoU": miou_at_one,
                                  "MR-mAP": iou_thd2average_precision,

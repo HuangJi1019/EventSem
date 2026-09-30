@@ -1,13 +1,12 @@
-tfl_config_path=EventSem/scripts/charades_sta/train_vgg.sh
-ckpt_path=EventSem/results_charades/charadesSTA-video_tef-demo-2025-06-25-22-39-31/model_best.ckpt
-eval_split_name=test
-eval_path=data/charades_sta/charades_sta_test_tvr_format_copy.jsonl
-echo ${ckpt_path}
-echo ${eval_split_name}
-echo ${eval_path}
+# usage: bash EventSem/scripts/inference.sh <ckpt_path> <eval_path> [extra args...]
+#   e.g. bash EventSem/scripts/inference.sh results_tacos/<run>/model_best.ckpt data/tacos/test.jsonl
+# Model and data settings are read back from opt.json next to the checkpoint; --eval_path,
+# --t_feat_dir and --semantic_t_feat_dir given here override the saved ones (see README, SRE).
+ckpt_path=$1
+eval_path=$2
 PYTHONPATH=$PYTHONPATH:. python EventSem/inference.py \
-${tfl_config_path} \
+data/MR.py \
 --resume ${ckpt_path} \
---eval_split_name ${eval_split_name} \
+--eval_split_name val \
 --eval_path ${eval_path} \
-${@:4}
+"${@:3}"

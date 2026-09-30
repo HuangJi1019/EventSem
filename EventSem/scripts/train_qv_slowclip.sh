@@ -57,7 +57,7 @@ lw_sal=0.1
 lw_saliency=0.8
 label_loss_coef=4
 
-PYTHONPATH=$PYTHONPATH:. python EventSem/EventSem/train.py \
+PYTHONPATH=$PYTHONPATH:. python EventSem/train.py \
 data/MR.py \
 --dset_name ${dset_name} \
 --ctx_mode ${ctx_mode} \
@@ -95,17 +95,12 @@ data/MR.py \
 --use_SRM \
 --clip_length 2.0 \
 --max_event_spans 40 \
---score_weight 0.1 \
+--score_weight 0.15 \
 --event_sim_threshold 0.15 \
 --lr 4e-4 \
---span_width_threshold 0.2 \
+--span_width_threshold 0.5 \
 --semantic_t_feat_dir "datasets/semantic_embeddings/qv_highlight_token_level_new" \
 --n_semantic_proj 6 \
 --gate -2 \
---sim_sharpness 5 \
-
-
-${@:1}
-# 18,6,21
-
-# 0.16, 0.165, 0.17, 0.175, 0.18, 0.185, 0.19, 0.195
+--sim_sharpness 3 \
+"$@"

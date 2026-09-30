@@ -29,28 +29,31 @@ Our framework introduces two plug-and-play modules that can enhance any proposal
 
 ### Setup
 ```bash
-# Clone the repository
+git clone https://github.com/HuangJi1019/EventSem.git
 cd EventSem
 
-# Create conda environment
 conda create -n eventsem python=3.8
 conda activate eventsem
 
-# Install dependencies
 pip install -r requirements.txt
-
 ```
+
+All commands below are run from the repository root.
 
 ## 📁 Data Preparation
 
-### Download Datasets
+### Video and text features
+Download the QVHighlights, Charades-STA and TACoS features following the instructions of
+[CG-DETR](https://github.com/wjun0830/CGDETR) and place them under `datasets/`.
+
+### Linguistic knowledge (MSSE features)
+Download the GloVe vectors [`glove.6B.300d.txt`](https://nlp.stanford.edu/projects/glove/) into
+the repository root, then generate the token-level semantic features:
 ```bash
-Download QVHighligths, Charades-STA, and TACoS features, please follow the instruction of CG-DETR
+python linguistic_knowledge_tacos_v2.py      # -> datasets/semantic_embeddings/tacos-token-level-v2
+python linguistic_knowledge_charades_v2.py   # -> datasets/semantic_embeddings/charades-sta-token-level-v2
 ```
-### Linguistic Knowledge Datasets
-```bash
-run code linguistic_knowledge.py to generate the linguistic knowledge
-```
+
 The datasets file structure would be:
 ```
 --datasets
@@ -66,65 +69,69 @@ The datasets file structure would be:
         --clip_features
         --clip_text_features
         --slowfast_features
-    --semantic_embeddings 
-        --charades-sta-token-level
-        --qv_highlight_token_level
-        --tacos-token-level
+    --semantic_embeddings
+        --charades-sta-token-level-v2
+        --tacos-token-level-v2
 ```
 
-### Semantic Robustness Evaluation test sets
-We rewrite original queries using T5-based paraphrasers with semantic similarity filtering (cosine similarity $\geq$ 0.85) to preserve meaning. We call this the SRE dataset. We report the Charades-STA-SRE and the TACoS-SRE datasets.
+### Semantic Robustness Evaluation (SRE) test sets
+We rewrite original queries using T5-based paraphrasers with semantic similarity filtering (cosine similarity $\geq$ 0.85) to preserve meaning. We call this the SRE dataset. We report the Charades-STA-SRE and the TACoS-SRE datasets:
 
-For the Charades-STA-SRE, you can find it in
-```bash
-data/charades_sta/charades_sta_SRE_test_tvr_format.jsonl 
-```
-For the TACoS-SRE, you can find it in
-```bash
-data/tacos/test_SRE.jsonl 
-```
+| Dataset | Query file |
+|---|---|
+| Charades-STA-SRE | `data/charades_sta/charades_sta_SRE_test_tvr_format.jsonl` |
+| TACoS-SRE | `data/tacos/test_SRE.jsonl` |
 
 ## 🔧 Training
 
-### QVHighlights
-
-```python
-bash EventSem/scripts/train_qv_slowclip.sh
+### TACoS
+```bash
+bash EventSem/scripts/tacos/train.sh
 ```
 
 ### Charades-STA
-
-For VGG feature:
-
-```python
-bash EventSem/scripts/charades-sta/train_vgg.sh
+SlowFast + CLIP features:
+```bash
+bash EventSem/scripts/charades_sta/train.sh
+```
+VGG features:
+```bash
+bash EventSem/scripts/charades_sta/train_vgg.sh
 ```
 
-For SlowFast+Clip feature:
-```python
-bash EventSem/scripts/charades-sta/train.sh
+### QVHighlights
+```bash
+bash EventSem/scripts/train_qv_slowclip.sh
 ```
 
-### TACoS
-
-```python
-bash EventSem/scripts/TACoS/train.sh
-```
-
+Extra arguments are passed through to `EventSem/train.py`, e.g. `--seed 2027` or `--exp_id my_run`.
+Results are written to `results_<dataset>/<dataset>-video_tef-<exp_id>-<timestamp>/`, including
+`model_best.ckpt` and `best_*_metrics.json`. Pass `--no_semantic_enhancement` to disable MSSE and
+`--no_event_prior_filtering` to disable EATG.
 
 ## 📋 Evaluation
 
-### Standard Evaluation
+### Standard evaluation
 ```bash
-# Evaluate on TACoS
-bash Event/scripts/inference.sh data/MR.py results/TACoS/model_best.ckpt 'val'
+bash EventSem/scripts/inference.sh <path/to/model_best.ckpt> data/tacos/test.jsonl
 ```
+The model settings are read from the `opt.json` saved next to the checkpoint. Add
+`--eval_results_dir <dir>` to write the predictions somewhere other than the checkpoint's directory.
 
 ### Semantic Robustness Evaluation
+The SRE queries reuse the qids of the original test split, so their CLIP text features and MSSE
+features must be extracted into **separate** directories and passed explicitly; otherwise the
+features of the original queries would be used. For TACoS-SRE:
 ```bash
-# Evaluate on linguistically diverse test sets
-replace the original test file to Semantic Robustness Evaluation test sets
+python extract_clip_text.py tacos data/tacos/test_SRE.jsonl datasets/tacos/clip_text_features_SRE
+python linguistic_knowledge_tacos_v2.py data/tacos/test_SRE.jsonl datasets/semantic_embeddings/tacos-token-level-v2-SRE
+
+bash EventSem/scripts/inference.sh <path/to/model_best.ckpt> data/tacos/test_SRE.jsonl \
+    --t_feat_dir datasets/tacos/clip_text_features_SRE \
+    --semantic_t_feat_dir datasets/semantic_embeddings/tacos-token-level-v2-SRE
 ```
+Charades-STA-SRE works the same way with `charades` / `linguistic_knowledge_charades_v2.py` and
+`data/charades_sta/charades_sta_SRE_test_tvr_format.jsonl`.
 
 
 
@@ -133,5 +140,5 @@ We will provide it after the paper is accepted.
 
 ## 🙏 Acknowledgments
 
-- Built upon QD-DETR,TR-DETR, and FlashVTG
+- Built upon QD-DETR, TR-DETR, and FlashVTG
 - Thanks to the creators of TACoS, Charades-STA, and QVHighlights datasets

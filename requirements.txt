@@ -1,0 +1,15 @@
+# Tested with Python 3.8 and CUDA 11.7. Install the PyTorch build matching your CUDA first,
+# e.g. pip install torch==2.0.1 torchvision==0.15.2 --index-url https://download.pytorch.org/whl/cu117
+torch==2.0.1
+torchvision==0.15.2
+torchtext==0.15.2
+numpy==1.24.4
+scipy==1.10.1
+pandas==2.0.3
+nncore==0.3.8
+tqdm
+tensorboard
+thop
+nltk==3.9.1
+transformers==4.46.3
+git+https://github.com/openai/CLIP.git

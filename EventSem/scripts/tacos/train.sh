@@ -3,17 +3,16 @@ ctx_mode=video_tef
 v_feat_types=slowfast_clip
 t_feat_type=clip
 results_root=results_tacos
-exp_id=50005
-
+exp_id=eventsem
 
 ######## data paths
 train_path=data/tacos/train.jsonl
-eval_path=data/tacos/test_SRE.jsonl
- # eval_path=data/tacos/test.jsonl
+eval_path=data/tacos/test.jsonl   # data/tacos/test_SRE.jsonl for the SRE benchmark
 eval_split_name=val
 
 ######## setup video+text features
 feat_root=datasets/tacos
+semantic_t_feat_dir=datasets/semantic_embeddings/tacos-token-level-v2
 
 # video features
 v_feat_dim=0
@@ -36,12 +35,10 @@ else
   exit 1
 fi
 
-
 #### training
-bsz=32 #32
+bsz=32
 max_v_l=-1
 max_q_l=-1
-eval_epoch=1
 weight_decay=0.0001
 eval_bsz=1
 
@@ -60,6 +57,10 @@ lw_saliency=0.8
 label_loss_coef=4
 nms_type=normal
 
+# You can override the GPU with CUDA_VISIBLE_DEVICES externally.
+if [[ -z "${CUDA_VISIBLE_DEVICES+x}" ]]; then
+  export CUDA_VISIBLE_DEVICES=0
+fi
 PYTHONPATH=$PYTHONPATH:. python EventSem/train.py \
 data/MR.py \
 --dset_name ${dset_name} \
@@ -79,9 +80,10 @@ data/MR.py \
 --dummy_layers ${dummy_layers} \
 --max_v_l ${max_v_l} \
 --max_q_l ${max_q_l} \
---n_epoch 400 \
---lr_drop 200 \
---eval_epoch ${eval_epoch} \
+--n_epoch 200 \
+--lr_drop 50 \
+--eval_epoch 3 \
+--num_workers 6 \
 --wd ${weight_decay} \
 --eval_bsz ${eval_bsz} \
 --lw_reg ${lw_reg} \
@@ -100,7 +102,11 @@ data/MR.py \
 --lr 3e-4 \
 --dropout 0 \
 --score_weight 0.5 \
---event_sim_threshold 0.25 \
---semantic_t_feat_dir "datasets/semantic_embeddings/tacos-token-level" \
+--event_sim_threshold 0.15 \
+--max_event_spans 10 \
+--semantic_t_feat_dir ${semantic_t_feat_dir} \
 --n_semantic_proj 2 \
-${@:1}
+--gate -2.0 \
+--seed 2026 \
+--device 0 \
+"$@"

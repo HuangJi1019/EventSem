@@ -257,48 +257,50 @@ def compute_mr_results(
         else:
             targets = {}
         outputs = model(**model_inputs, targets=targets)
-        end_time = time.time()
-        print(f"inference time: {end_time-start_time:.5f}")
-        peak_memory_bytes = torch.cuda.max_memory_allocated("cuda")
-        peak_memory_mb = peak_memory_bytes / (1024 * 1024)
 
-        print(f"推理峰值显存占用: {peak_memory_mb:.5f} MB")
+        if getattr(opt, "profile_flops", False):
+            end_time = time.time()
+            print(f"inference time: {end_time-start_time:.5f}")
+            peak_memory_bytes = torch.cuda.max_memory_allocated("cuda")
+            peak_memory_mb = peak_memory_bytes / (1024 * 1024)
+
+            print(f"推理峰值显存占用: {peak_memory_mb:.5f} MB")
     
-        thop_inputs_full = (
-            model_inputs['src_txt'],               # 1. src_txt (Tensor)
-            model_inputs['src_txt_mask'],          # 2. src_txt_mask (Tensor)
-            model_inputs['src_vid'],               # 3. src_vid (Tensor)
-            model_inputs['src_vid_mask'],          # 4. src_vid_mask (Tensor)
-            model_inputs['semantic_t_feat'],       # 7. semantic_t_feat (Tensor)
-            model_inputs['semantic_t_feat_mask'],  # 8. semantic_t_feat_mask (Tensor)
-            None,                                   # 9. targets (占位，原为 Dict/None)
-            None,
-            None
-        )
+            thop_inputs_full = (
+                model_inputs['src_txt'],               # 1. src_txt (Tensor)
+                model_inputs['src_txt_mask'],          # 2. src_txt_mask (Tensor)
+                model_inputs['src_vid'],               # 3. src_vid (Tensor)
+                model_inputs['src_vid_mask'],          # 4. src_vid_mask (Tensor)
+                model_inputs['semantic_t_feat'],       # 7. semantic_t_feat (Tensor)
+                model_inputs['semantic_t_feat_mask'],  # 8. semantic_t_feat_mask (Tensor)
+                None,                                   # 9. targets (占位，原为 Dict/None)
+                None,
+                None
+            )
 
 
-        # --- 2. 计算 FLOPs ---
+            # --- 2. 计算 FLOPs ---
 
-        # thop 期望的输入格式是 (args, kwargs) 的元组，
-        # 当所有参数都是关键字参数时，args 为空元组 ()，kwargs 是您的字典。
-        # thop 的 profile 函数在处理 kwargs 时通常要求 inputs=(kwargs,)
-        try:
-            # 完整模型 FLOPs 计算
-            # 注意：这里的 inputs 是一个包含字典的元组
-            flops_full, params_full = profile(model, inputs=thop_inputs_full, verbose=False)
+            # thop 期望的输入格式是 (args, kwargs) 的元组，
+            # 当所有参数都是关键字参数时，args 为空元组 ()，kwargs 是您的字典。
+            # thop 的 profile 函数在处理 kwargs 时通常要求 inputs=(kwargs,)
+            try:
+                # 完整模型 FLOPs 计算
+                # 注意：这里的 inputs 是一个包含字典的元组
+                flops_full, params_full = profile(model, inputs=thop_inputs_full, verbose=False)
 
-            print("\n--- FLOPs compute results (Batch Size = 1) ---")
-            print(f"all FLOPs (Full Model): {flops_full / 1e9:.5f} G")
-            # print(f"full (Params): {params_full / 1e6:.5f} M")
-            print(f"full (Params): {params_full:.5f} M")
-            print("------------------------------------------\n")
+                print("\n--- FLOPs compute results (Batch Size = 1) ---")
+                print(f"all FLOPs (Full Model): {flops_full / 1e9:.5f} G")
+                # print(f"full (Params): {params_full / 1e6:.5f} M")
+                print(f"full (Params): {params_full:.5f} M")
+                print("------------------------------------------\n")
 
-        except Exception as e:
-            print(f"FLOPs fail: {e}")
-            pass
+            except Exception as e:
+                print(f"FLOPs fail: {e}")
+                pass
 
         
-        exit() # 退出，只计算一次 FLOPs
+            exit() # 退出，只计算一次 FLOPs
 
 
         
@@ -515,12 +517,21 @@ def setup_model(opt):
                     new_state_dict[name] = v
                 model.load_state_dict(new_state_dict)
         else:
-            if "model" in checkpoint:
-                stage1_state_dict = {k: v for k, v in checkpoint["model"].items() 
-                                if not any(keyword in k for keyword in ['event_enhancer','boundary_refiners','saliency_token','confidence_predictor'])}
+            raw = checkpoint["model"] if "model" in checkpoint else checkpoint["state_dict"]
+            # The keyword filter exists to load a stage-1 checkpoint into a model that has
+            # extra stage-2 modules. For a plain same-architecture resume it is harmful:
+            # 'saliency_token' matches it and would be silently re-initialised.
+            # --resume_full bypasses the filter (load_state_dict is strict=False either way).
+            if getattr(opt, "resume_full", False):
+                stage1_state_dict = raw
             else:
-                stage1_state_dict = {k: v for k, v in checkpoint["state_dict"].items() 
+                stage1_state_dict = {k: v for k, v in raw.items()
                                 if not any(keyword in k for keyword in ['event_enhancer','boundary_refiners','saliency_token','confidence_predictor'])}
+                dropped = [k for k in raw if k not in stage1_state_dict]
+                if dropped:
+                    logger.warning(f"resume: {len(dropped)} key(s) dropped by the stage-1 filter "
+                                   f"and left at their random init: {dropped[:5]}"
+                                   f"{' ...' if len(dropped) > 5 else ''}. Pass --resume_full to keep them.")
             model.load_state_dict(stage1_state_dict, strict=False)
         if opt.resume_all:
             optimizer.load_state_dict(checkpoint["optimizer"])
@@ -604,7 +615,4 @@ def start_inference(train_opt=None, split=None, splitfile=None):
 from sys import argv
 
 if __name__ == "__main__":
-    # split, splitfile = argv
-    _, _, _, _, _, split, _, splitfile = argv
-
-    start_inference(split=split, splitfile=splitfile)
+    start_inference()

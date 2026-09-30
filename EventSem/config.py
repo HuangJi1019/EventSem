@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import torch
 import argparse
@@ -34,21 +35,40 @@ class BaseOptions(object):
         parser.add_argument("--bsz", type=int, default=8, help="mini-batch size")
         parser.add_argument("--n_epoch", type=int, default=300, help="number of epochs to run")
         parser.add_argument("--max_es_cnt", type=int, default=30,
-                            help="number of epochs to early stop, use -1 to disable early stop")
-        parser.add_argument("--resume", type=str, default="/users/40448930/ji_code/work2/EventSem/results/tacos/EventSem/model_best.ckpt",
+                            help="number of consecutive non-improving EVALUATIONS to tolerate "
+                                 "before early stopping (-1 disables). Patience in epochs is "
+                                 "max_es_cnt * eval_epoch.")
+        # 2026-08-25 (Ji): skip evaluation entirely for the first eval_start_epoch epochs.
+        # Early evals on TACoS/Charades never produce the best checkpoint (measured best
+        # epochs are 23-89) and each one costs several minutes of GPU time.
+        parser.add_argument("--eval_start_epoch", type=int, default=0,
+                            help="do not evaluate before this epoch index (0-based); "
+                                 "0 = evaluate from the start")
+        # NOTE: this used to default to a trained charades checkpoint, which silently
+        # warm-started EVERY training run (charades AND tacos) from those weights.
+        # Default is None = train from scratch; pass a path explicitly to warm-start.
+        parser.add_argument("--resume", type=str, default=None,
                             help="checkpoint path to resume or evaluate, without --resume_all this only load weights")
+        parser.add_argument("--resume_full", action="store_true",
+                            help="bypass the stage-1 keyword filter when loading --resume; use for a "
+                                 "plain same-architecture resume so no trained parameter is dropped")
         parser.add_argument("--resume_all", action="store_true",
                             help="if --resume_all, load optimizer/scheduler/epoch as well")
         parser.add_argument("--start_epoch", type=int, default=0,
                             help="if None, will be set automatically when using --resume_all")
 
         parser.add_argument('--score_weight', type=float, default=0.5,help="weight for score loss[0,1]")
-        parser.add_argument('--event_sim_threshold', type=float, default=0.25,help="threshold for event similarity")
-        parser.add_argument("--semantic_t_feat_dir", type=str, help="semantic text/query feature dir",default="/datasets/semantic_embeddings/charades-sta")
+        parser.add_argument('--event_sim_threshold', type=float, default=0.15,help="threshold for event similarity")
+        parser.add_argument("--semantic_t_feat_dir", type=str, help="semantic text/query feature dir",default="datasets/semantic_embeddings/charades-sta-token-level-v2")
         parser.add_argument("--span_width_threshold", type=float, default=0.5,help="threshold for span width")
         parser.add_argument("--n_semantic_proj", type=int, default=5, help="#layers to semantic encoder input")
-        parser.add_argument("--gate", type=float,default=0.1, help="the weight for semantic information")
-        parser.add_argument("--sim_sharpness",type=int,default=3,help="")
+        parser.add_argument("--gate", type=float, default=-2.0, help="initial logit of the MSSE gate")
+        parser.add_argument("--x_init", type=float, default=0.5, help="initial mix weight between class_head and conf_head outputs")
+        parser.add_argument("--sim_sharpness", type=float, default=3.0, help="sharpness for similarity sigmoid scaling")
+        parser.add_argument("--event_contrib_threshold", type=float, default=0.1,
+                            help="epsilon in paper Eq.(12): minimum gamma_j for an event to enter the "
+                                 "attention mask.")
+        parser.add_argument("--use_amp", action="store_true", help="enable mixed precision with autocast")
 
         
         
@@ -140,6 +160,8 @@ class BaseOptions(object):
         parser.add_argument("--use_txt_pos", action="store_true", help="use position_embedding for text as well.")
         parser.add_argument('--nheads', default=8, type=int,
                             help="Number of attention heads inside the transformer's attentions")
+        parser.add_argument('--group_norm_groups', default=8, type=int,
+                            help="Number of groups for GroupNorm in the refine conv net")
         parser.add_argument('--num_dummies', default=35, type=int,
                             help="Number of dummy tokens")
         parser.add_argument('--total_prompts', default=10, type=int,
@@ -192,10 +214,19 @@ class BaseOptions(object):
         parser.add_argument("--nms_type", type=str, default="normal", choices=["normal", "linear"])
         
         
-        parser.add_argument("--max_event_spans", type=int, default=50) 
-        parser.add_argument("--use_event_prior_filtering", type=bool,default=True)    
-        parser.add_argument("--use_event_prior_in_training", type=bool,default=True)
-        parser.add_argument("--semantic_enhancement",type=bool,default=True)
+        parser.add_argument("--max_event_spans", type=int, default=10) 
+        # NOTE: argparse type=bool is a trap -- "--flag False" parses to True (non-empty
+        # string). Use the explicit store_true/store_false pair instead.
+        parser.add_argument("--no_event_prior_filtering", dest="use_event_prior_filtering",
+                            action="store_false", help="disable EATG calibration at inference")
+        parser.set_defaults(use_event_prior_filtering=True)
+        parser.add_argument("--no_semantic_enhancement", dest="semantic_enhancement",
+                            action="store_false", help="Disable MSSE (baseline backbone).")
+        parser.set_defaults(semantic_enhancement=True)
+        parser.add_argument("--profile_flops", action="store_true",
+                            help="Profile inference time / peak memory / FLOPs on the first eval batch, "
+                                 "then exit. Off by default: it terminates the process before any metric "
+                                 "is computed.")
         self.parser = parser
 
     def display_save(self, opt):
@@ -216,6 +247,10 @@ class BaseOptions(object):
         #     opt.results_root = os.path.sep.join(opt.results_root.split(os.path.sep)[:-1] + ["debug_results", ])
         #     opt.num_workers = 0
 
+        # allow "--resume None" on the command line to mean "no checkpoint"
+        if isinstance(opt.resume, str) and opt.resume.strip().lower() in ("none", ""):
+            opt.resume = None
+
         if isinstance(self, TestOptions):
             # modify model_dir to absolute path
             # opt.model_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results", opt.model_dir)
@@ -223,14 +258,20 @@ class BaseOptions(object):
             # if a_feat_dir is not None:
             #     opt.a_feat_dir = a_feat_dir
             saved_options = load_json(os.path.join(opt.model_dir, self.saved_option_filename))
+            # evaluation data given on the command line (e.g. the SRE queries and their own
+            # text features) takes precedence over the paths saved at training time
+            keep = ["results_root", "num_workers", "nms_thd", "debug",  # "max_before_nms", "max_after_nms"
+                    "max_pred_l", "min_pred_l",
+                    "resume", "resume_all", "no_sort_results"]
+            keep += [a for a in ["eval_path", "eval_split_name", "t_feat_dir", "semantic_t_feat_dir"]
+                     if f"--{a}" in sys.argv]
             for arg in saved_options:  # use saved options to overwrite all BaseOptions args.
-                if arg not in ["results_root", "num_workers", "nms_thd", "debug",  # "max_before_nms", "max_after_nms"
-                               "max_pred_l", "min_pred_l",
-                               "resume", "resume_all", "no_sort_results"]:
+                if arg not in keep:
                     setattr(opt, arg, saved_options[arg])
             # opt.no_core_driver = True
             if opt.eval_results_dir is not None:
                 opt.results_dir = opt.eval_results_dir
+                mkdirp(opt.results_dir)
         else:
             if opt.exp_id is None:
                 raise ValueError("--exp_id is required for at a training option!")

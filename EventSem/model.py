@@ -8,6 +8,7 @@ from torch import nn
 from EventSem.transformer import build_transformer, TransformerEncoderLayer, TransformerEncoder
 from EventSem.position_encoding import build_position_encoding, PositionEmbeddingSine
 import math
+import contextlib
 from nncore.nn import build_model as build_adapter
 from blocks.generator import PointGenerator
 
@@ -121,7 +122,7 @@ class EventSem(nn.Module):
         self.dummy_rep_token = torch.nn.Parameter(torch.randn(args.num_dummies, hidden_dim))
         self.dummy_rep_pos = torch.nn.Parameter(torch.randn(args.num_dummies, hidden_dim))
         normalize_before = False
-        input_txt_sa_proj = TransformerEncoderLayer(hidden_dim, 8, self.args.dim_feedforward, 0.1, "prelu", normalize_before)
+        input_txt_sa_proj = TransformerEncoderLayer(hidden_dim, self.args.nheads, self.args.dim_feedforward, self.args.dropout, "prelu", normalize_before)
         txtproj_encoder_norm = nn.LayerNorm(hidden_dim) if normalize_before else None
         self.txtproj_encoder = TransformerEncoder(input_txt_sa_proj, args.dummy_layers, txtproj_encoder_norm)
 
@@ -137,21 +138,32 @@ class EventSem(nn.Module):
         self.max_num_moment = max_num_moment
         self.merge_cls_sal = merge_cls_sal
         self.args = args
-        self.x = nn.Parameter(torch.tensor(0.5))
+        self.x = nn.Parameter(torch.tensor(self.args.x_init, dtype=torch.float32))
         
+        # Unused and frozen: Eq.(9) computes the event-query cosine directly in the shared
+        # 256-d space, so EATG has no trained parameters. Kept only so that released
+        # checkpoints load with matching keys.
         self.event_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.query_proj = nn.Linear(hidden_dim, hidden_dim)
+        self.event_proj.requires_grad_(False)
+        self.query_proj.requires_grad_(False)
 
         self.saliency_token = nn.Parameter(torch.zeros(1, 1, hidden_dim))
         nn.init.normal_(self.saliency_token, std=0.02)
-        self.saliency_attn = nn.MultiheadAttention(hidden_dim, 8, dropout=0.1)
+        self.saliency_attn = nn.MultiheadAttention(hidden_dim, self.args.nheads, dropout=self.args.dropout)
         self.saliency_norm = nn.LayerNorm(hidden_dim)
-        self.saliency_dropout = nn.Dropout(0.1)
+        self.saliency_dropout = nn.Dropout(input_dropout)
+        gn_groups = self.args.group_norm_groups
+        if hidden_dim % gn_groups != 0:
+            gn_groups = math.gcd(hidden_dim, gn_groups)
+            if gn_groups == 0:
+                gn_groups = 1
         self.refine_conv_net = nn.Sequential(
             nn.Conv1d(hidden_dim + 2, hidden_dim, kernel_size=3, padding=1),
-            nn.BatchNorm1d(hidden_dim),
+            nn.GroupNorm(gn_groups, hidden_dim),
             nn.ReLU(inplace=True),
             nn.Conv1d(hidden_dim, hidden_dim, kernel_size=3, padding=1),
-            nn.BatchNorm1d(hidden_dim),
+            nn.GroupNorm(gn_groups, hidden_dim),
             nn.ReLU(inplace=True),
             nn.Conv1d(hidden_dim, 2, kernel_size=1) 
         )
@@ -167,10 +179,41 @@ class EventSem(nn.Module):
             )
         self.input_sematic_txt_proj = nn.Sequential(*layers)
         
-        self.gate = nn.Parameter(torch.tensor(self.args.gate))
-        
-        self.sim_sharpness = nn.Parameter(torch.tensor(5.0))
-    def generate_event_prior_mask(self, pseudo_event_spans, event_query_sim, video_length):
+        self.gate = nn.Parameter(torch.tensor(self.args.gate, dtype=torch.float32))
+        # Per-token gate for Eq.(4): g_i is predicted from the token's CLIP representation,
+        # plus a learned offset on tokens that belong to a BPE-fragmented word. Fragmentation
+        # needs no extra input: MSSE copies one word vector to every sub-word position, so a
+        # fragmented word shows up as consecutive positions with identical semantic vectors.
+        self.gate_tok = nn.Linear(hidden_dim, 1)
+        nn.init.zeros_(self.gate_tok.weight); nn.init.constant_(self.gate_tok.bias, self.args.gate)
+        self.gate_frag = nn.Parameter(torch.zeros(()))
+
+    def _build_txt_mask_dummy(self, src_txt_mask):
+        mask_txt = torch.ones(
+            src_txt_mask.shape[0],
+            self.args.num_dummies,
+            device=src_txt_mask.device,
+            dtype=torch.bool,
+        )
+        return torch.cat([mask_txt, src_txt_mask], dim=1)
+
+    def _decode_out_coord(self, out_coord, point):
+        was_2d = out_coord.dim() == 2
+        if was_2d:
+            out_coord = out_coord.unsqueeze(0)
+            point = point.unsqueeze(0)
+
+        boundary = torch.cat(
+            [out_coord[:, :, 0:1] * -1, out_coord[:, :, 1:2]], dim=-1
+        )
+        boundary = boundary * point[:, :, 3:4]
+        boundary = boundary + point[:, :, 0:1]
+        boundary = boundary * self.args.clip_length
+
+        return boundary[0] if was_2d else boundary
+
+    def generate_event_prior_mask(self, pseudo_event_spans, event_query_sim, video_length,
+                                  valid_spans_mask=None):
         """
         Args:
             pseudo_event_spans:  [batch_size]
@@ -190,24 +233,36 @@ class EventSem(nn.Module):
         positions = torch.arange(video_length, device=device).float() / video_length  # [0, 1]范围内的位置
         
         for b in range(batch_size):
-            num_spans = min(pseudo_event_spans[b].shape[0], event_query_sim.shape[1])
+            # pseudo_event_spans[b].shape[0] is the PADDED slot count (max_event_spans),
+            # not the number of events actually detected. Using it pulled ~40 zero-similarity
+            # padding slots into mu/sigma and let them contribute to the mask. Use the real
+            # validity mask instead (paper Eq.(10): statistics over the M discovered events).
+            if valid_spans_mask is not None:
+                valid_b = valid_spans_mask[b][:event_query_sim.shape[1]].bool()
+            else:
+                valid_b = pseudo_event_spans[b][:event_query_sim.shape[1], 1] > 0
+            span_idx = torch.nonzero(valid_b, as_tuple=False).flatten().tolist()
+            num_spans = len(span_idx)
             if num_spans == 0:
                 continue
-            
-            batch_sim = event_query_sim[b, :num_spans]
-    
+
+            batch_sim = event_query_sim[b, valid_b]
+
             mean_sim = batch_sim.mean()
-            std_sim = batch_sim.std() + 1e-6 
+            # std() of a single element is nan; fall back to 0 so the threshold stays finite.
+            std_sim = (batch_sim.std() if num_spans > 1 else torch.zeros((), device=device)) + 1e-6 
             
             scale_factor = (threshold_base * 2) - 1 
             adaptive_threshold = mean_sim + scale_factor * std_sim
             
             batch_mask = torch.zeros(video_length, device=device)
             
-            for i in range(num_spans):
+            for i in span_idx:
                 sim_score = event_query_sim[b, i]
                 sim_weight = torch.sigmoid((sim_score - adaptive_threshold) * self.args.sim_sharpness)
-                if sim_weight < 0.05:
+                # paper Eq.(11)-(12): only events with gamma_j > epsilon contribute (epsilon = 0.1).
+                # This used to be hard-coded to 0.05; it is now a flag so the paper value is the default.
+                if sim_weight < self.args.event_contrib_threshold:
                     continue
                 
                 center = pseudo_event_spans[b][i, 0]
@@ -232,7 +287,15 @@ class EventSem(nn.Module):
         
         return normalized_mask
     
-    def compute_event_query_similarity(self, event_features, query_emb, valid_spans_mask=None):
+    def _pool_query_embeddings(self, query_emb, query_mask):
+        """Mean-pool the valid text tokens."""
+        valid_mask = query_mask.bool()
+        token_sum = (query_emb * valid_mask.unsqueeze(-1)).sum(dim=1, keepdim=True)
+        count = valid_mask.sum(dim=1, keepdim=True).clamp(min=1).unsqueeze(-1)
+        return (token_sum / count).squeeze(1)
+
+    def compute_event_query_similarity(self, event_features, query_emb, valid_spans_mask=None,
+                                       query_mask=None):
         """
         Calculate the similarity between event features and query text
         
@@ -240,40 +303,36 @@ class EventSem(nn.Module):
             event_features: [batch_size, num_spans, hidden_dim]
             query_emb:  [batch_size, L_txt, hidden_dim]
             valid_spans_mask: [batch_size, num_spans]
+            query_mask: [batch_size, L_txt]
             
         Returns:
             similarity: [batch_size, num_spans]
         """
         _, L_txt, _ = query_emb.shape
-        
         if L_txt == 0:
             raise ValueError("Query embedding length is zero.")
-        
-        query_pooled = torch.mean(query_emb, dim=1)  # [batch_size, hidden_dim]
-        
-        event_proj = self.event_proj(event_features)  # [batch_size, num_spans, hidden_dim]
-        query_proj = self.event_proj(query_pooled).unsqueeze(1)  # [batch_size, 1, hidden_dim]
-        
-        event_norm = torch.norm(event_proj, dim=2, keepdim=True)
-        query_norm = torch.norm(query_proj, dim=2, keepdim=True)
-        event_norm = torch.clamp(event_norm, min=1e-6)
-        query_norm = torch.clamp(query_norm, min=1e-6)
-        event_normalized = event_proj / event_norm
-        query_normalized = query_proj / query_norm
-        similarity = torch.bmm(event_normalized, query_normalized.transpose(1, 2)).squeeze(2)  # [batch_size, num_spans]
-        
+
+        if query_mask is None:
+            query_mask = torch.ones(query_emb.shape[:2], device=query_emb.device, dtype=torch.bool)
+        query_pooled = self._pool_query_embeddings(query_emb, query_mask).unsqueeze(1)
+
+        event_norm = torch.clamp(torch.norm(event_features, dim=2, keepdim=True), min=1e-6)
+        query_norm = torch.clamp(torch.norm(query_pooled, dim=2, keepdim=True), min=1e-6)
+        event_normalized = event_features / event_norm
+        query_normalized = query_pooled / query_norm
+        similarity = torch.bmm(event_normalized, query_normalized.transpose(1, 2)).squeeze(2)
+
         if valid_spans_mask is not None:
             similarity = similarity * valid_spans_mask.float()
             if similarity.sum() == 0:
-                similarity += 1e-6 
-        
+                similarity = similarity + 1e-6
+
         min_sim = similarity.min(dim=1, keepdim=True)[0]
         max_sim = similarity.max(dim=1, keepdim=True)[0]
         range_sim = torch.clamp(max_sim - min_sim, min=1e-8)
         normalized_sim = (similarity - min_sim) / range_sim
         normalized_sim[range_sim.expand_as(normalized_sim) == 0] = 0.5
         normalized_sim = normalized_sim + 1e-6
-        
         return normalized_sim
     
     def extract_event_features(self, src_vid, pseudo_event_spans=None, pseudo_event_spans_used=None, pseudo_event_spans_mask=None):
@@ -378,7 +437,12 @@ class EventSem(nn.Module):
 
         norm_factor = torch.norm(src_vid, dim=2, keepdim=True) + 1e-8
         norm_vid = src_vid / norm_factor
-        
+        # input_vid_proj carries a bias and a LayerNorm, so padded positions are NOT zero and
+        # the 5x5 boundary kernel reaches into them, corrupting the score of the last valid
+        # frames. Zeroing them makes tsm match what bsz=1 (pure ZeroPad2d) would produce, so
+        # the pseudo-events no longer depend on the rest of the batch.
+        norm_vid = norm_vid * src_vid_mask.unsqueeze(-1).to(norm_vid.dtype)
+
         tsm = torch.bmm(norm_vid, norm_vid.transpose(1, 2))  # [bsz, L_src, L_src]
         
         mask = torch.tensor([
@@ -395,7 +459,12 @@ class EventSem(nn.Module):
         score = F.conv2d(pad_tsm, mask).squeeze(1)  # [bsz, L_src, L_src]
         score = torch.diagonal(score, dim1=1, dim2=2)  # [bsz, L_src]
         
-        tau = score.mean(dim=1, keepdim=True).expand(-1, L_src)  # [bsz, L_src]
+        # Boundary threshold tau = mean boundary score. The mean covers the VALID frames only,
+        # so a video yields the same pseudo-events regardless of the batch it is in.
+        _vm = src_vid_mask.to(score.dtype)                       # [bsz, L_src]
+        _n = _vm.sum(dim=1, keepdim=True).clamp(min=1.0)
+        _mean = (score * _vm).sum(dim=1, keepdim=True) / _n
+        tau = _mean.expand(-1, L_src)
 
         L_vid = torch.sum(src_vid_mask.to(torch.int), dim=1)  # [bsz]
         
@@ -407,16 +476,16 @@ class EventSem(nn.Module):
         score_r = torch.roll(score, shifts=1, dims=1)
         score_l = torch.roll(score, shifts=-1, dims=1)
         bnds = torch.where((score_r <= score) & (score_l <= score) & (tau <= score), 1., 0.)
-        
+
         for i in range(bsz):
             bnd_indices = torch.nonzero(bnds[i] == 1, as_tuple=False).squeeze(1)
             num_bnds = bnd_indices.size(0)
-            
+
             if num_bnds >= 2:
-                
-                prev_indices = bnd_indices[:-1]  
-                curr_indices = bnd_indices[1:]  
-                
+                # candidate events are the spans between adjacent boundaries
+                prev_indices = bnd_indices[:-1]
+                curr_indices = bnd_indices[1:]
+
                 span_widths = curr_indices - prev_indices
                 
                 valid_mask = span_widths <= L_vid[i] * self.args.span_width_threshold
@@ -444,7 +513,11 @@ class EventSem(nn.Module):
             pseudo_event_spans_used[i, 0, 1] = L_vid[i].item() - 1 
             pseudo_event_spans_mask[i, 0] = True
         
-        return pseudo_event_spans, pseudo_event_spans_used
+        # pseudo_event_spans_mask marks which of the max_spans slots hold a real event.
+        # It used to be computed and thrown away, so extract_event_features defaulted to
+        # all-ones and every padding slot ([0,0] -> start==end==0) passed its validity
+        # test. Every video therefore reported exactly max_event_spans "events".
+        return pseudo_event_spans, pseudo_event_spans_used, pseudo_event_spans_mask
     
     def adjust_scores_with_event_prior(self, scores, boundaries, event_prior_mask, video_duration):
         """ 
@@ -488,9 +561,13 @@ class EventSem(nn.Module):
         
 
         num_proposals = boundaries.shape[0]
+        # One host transfer instead of 2 * num_proposals .item() calls; each .item() forces a
+        # CUDA sync. The arithmetic below is untouched, so results are bit-for-bit identical.
+        _starts = start_indices.tolist()
+        _ends = end_indices.tolist()
         for i in range(num_proposals):
-            start_idx = start_indices[i].item()
-            end_idx = end_indices[i].item()
+            start_idx = _starts[i]
+            end_idx = _ends[i]
             
 
             if start_idx >= video_length or end_idx < 0 or start_idx >= end_idx:
@@ -522,17 +599,22 @@ class EventSem(nn.Module):
         src_vid = self.input_vid_proj(src_vid) #[8,742,256]
         
         if self.args.semantic_enhancement:
-            src_txt_proj = self.input_txt_proj(src_txt)  # [bsz,8,256]
+            src_txt_proj = self.input_txt_proj(src_txt)  # [bsz,L,256]
             semantic_emb = self.input_sematic_txt_proj(semantic_t_feat)  # [bsz,L,256]
-            
-            weight = torch.sigmoid(self.gate)
-            src_txt = weight * semantic_emb + (1 - weight) * src_txt_proj 
 
-            # src_txt = torch.cat([src_txt_proj, semantic_emb], dim=1)  # [bsz, 8+L, 256]
-            
-            # Update src_txt_mask to match the new sequence length
-            # semantic_t_feat_mask = torch.ones(semantic_t_feat.shape[:-1], device=semantic_t_feat.device, dtype=src_txt_mask.dtype)
-            # src_txt_mask = torch.cat([src_txt_mask, semantic_t_feat_mask], dim=1)
+            # per-token gate logit, offset on tokens of BPE-fragmented words
+            logit = self.gate_tok(src_txt_proj).squeeze(-1)
+            sem = semantic_t_feat
+            same_prev = torch.zeros(sem.shape[:2], device=sem.device, dtype=torch.bool)
+            same_next = torch.zeros_like(same_prev)
+            same_prev[:, 1:] = (sem[:, 1:] - sem[:, :-1]).abs().amax(-1) < 1e-6
+            same_next[:, :-1] = same_prev[:, 1:]
+            frag = (same_prev | same_next).float()
+            logit = logit + self.gate_frag * frag
+            weight = torch.sigmoid(logit).unsqueeze(-1)                          # [bsz, L, 1]
+
+            # Eq.(4): keep the CLIP stream intact and add the gated linguistic stream
+            src_txt = src_txt_proj + weight * semantic_emb
         else:
             src_txt = self.input_txt_proj(src_txt)  # [bsz,8,256]
         # Add type embeddings
@@ -542,30 +624,34 @@ class EventSem(nn.Module):
         pos_vid = self.position_embed(src_vid, src_vid_mask)
         pos_txt = self.txt_position_embed(src_txt) if self.use_txt_pos else torch.zeros_like(src_txt)
 
-        pseudo_event_spans, pseudo_event_spans_used = self.generate_pseudo_event(src_vid,
-                                                        src_vid_mask,
-                                                        targets)
-        
+        # EATG is an inference-time module (paper Sec. III-E): it has no trained parameters
+        # and does not touch the training loss, so it is skipped while training.
         event_prior_mask = None
-        if pseudo_event_spans_used is not None:
-
-            query_emb = self.pooling(src_txt.float(), src_txt_mask)
-            event_features, valid_spans_mask = self.extract_event_features(src_vid, None, pseudo_event_spans_used)
-
-            event_query_sim = self.compute_event_query_similarity(event_features, query_emb,valid_spans_mask)
-
+        if not self.training:
+            pseudo_event_spans, pseudo_event_spans_used, pseudo_event_spans_mask = self.generate_pseudo_event(src_vid,
+                                                            src_vid_mask,
+                                                            targets)
+            event_features, valid_spans_mask = self.extract_event_features(
+                src_vid, None, pseudo_event_spans_used, pseudo_event_spans_mask)
+            event_query_sim = self.compute_event_query_similarity(
+                event_features,
+                src_txt.float(),
+                valid_spans_mask,
+                src_txt_mask,
+            )
+            # Eq.(12) takes the NORMALISED (center, width) spans
             event_prior_mask = self.generate_event_prior_mask(
-                pseudo_event_spans_used, 
-                event_query_sim, 
-                src_vid.shape[1]
+                pseudo_event_spans,
+                event_query_sim,
+                src_vid.shape[1],
+                valid_spans_mask
             )
 
         txt_dummy = self.dummy_rep_token.reshape([1, self.args.num_dummies, self.hidden_dim]).repeat(src_txt.shape[0], 1, 1)
         src_txt_dummy = torch.cat([txt_dummy, src_txt], dim=1)
 
 
-        mask_txt = torch.tensor([[True] * self.args.num_dummies]).to(src_txt_mask.device).repeat(src_txt_mask.shape[0], 1)
-        src_txt_mask_dummy = torch.cat([mask_txt, src_txt_mask], dim=1)
+        src_txt_mask_dummy = self._build_txt_mask_dummy(src_txt_mask)
 
         pos_dummy = self.dummy_rep_pos.reshape([1, self.args.num_dummies, self.hidden_dim]).repeat(pos_txt.shape[0], 1, 1)
         pos_txt_dummy = torch.cat([pos_dummy, pos_txt], dim=1)
@@ -577,8 +663,7 @@ class EventSem(nn.Module):
         pos_txt_dummy = pos_txt_dummy.permute(1, 0, 2)
 
         src_txt_dummy = torch.cat([dummy_token, src_txt], dim=1)
-        mask_txt_dummy = torch.tensor([[True] * self.args.num_dummies]).to(src_txt_mask.device).repeat(src_txt_mask.shape[0], 1)
-        src_txt_mask_dummy = torch.cat([mask_txt_dummy, src_txt_mask], dim=1)
+        src_txt_mask_dummy = self._build_txt_mask_dummy(src_txt_mask)
 
         src = torch.cat([src_vid, src_txt_dummy], dim=1)  # (bsz, L_vid+L_txt, d)
         mask = torch.cat([src_vid_mask.clone(), src_txt_mask_dummy.clone()], dim=1).bool()        
@@ -595,7 +680,9 @@ class EventSem(nn.Module):
         )
         point = self.generator(pymid)
 
-        with torch.autocast("cuda", enabled=False):
+        use_amp = getattr(self.args, "use_amp", False) and torch.cuda.is_available()
+        autocast_ctx = torch.autocast("cuda", enabled=use_amp) if use_amp else contextlib.nullcontext()
+        with autocast_ctx:
             video_emb = video_emb.float()
             query_emb = self.pooling(src_txt.float(), src_txt_mask)
             
@@ -607,7 +694,7 @@ class EventSem(nn.Module):
 
             if self.coord_head is not None:
                 out_coord = [
-                    self.coord_head(e.float()).exp() * self.coef[i]
+                    F.softplus(self.coord_head(e.float())) * self.coef[i]
                     for i, e in enumerate(pymid)
                 ]
                 out_coord = torch.cat(out_coord, dim=1)#[batch_size, num_proposals, 2]，2 表示每个候选片段的时间边界 [start_time, end_time]
@@ -637,29 +724,9 @@ class EventSem(nn.Module):
                 for idx, boundary in enumerate(out_coord):
                     # boundary = boundary.clone()
 
-                    boundary = torch.cat([
-                        boundary[:, 0].unsqueeze(1) * -1,
-                        boundary[:, 1].unsqueeze(1)
-                    ], dim=1)
-                    boundary = boundary * point[:, 3, None].repeat(1, 2)
-                    boundary = boundary + point[:, 0, None].repeat(1, 2) #
-                    boundary = boundary / (1/self.args.clip_length)
-                    # boundary = torch.clamp(boundary, min=0)
-                    boundary = torch.cat((boundary, out_class[idx]), dim=-1) #[start_time, end_time, class_scores...]  
-                    
-                    if event_prior_mask is not None and self.args.use_event_prior_in_training:
-                        scores = out_class[idx, :, 0]
-                        
-                        adjusted_scores = self.adjust_scores_with_event_prior(
-                            scores, 
-                            boundary[:, :2],  
-                            event_prior_mask[idx] if event_prior_mask.dim() > 1 else event_prior_mask,
-                            video_durations[idx]
-                        )
-
-                        _, inds = adjusted_scores.sort(descending=True)
-                    else:
-                        _, inds = out_class[idx, :, 0].sort(descending=True)
+                    boundary = self._decode_out_coord(boundary, point)
+                    boundary = torch.cat((boundary, out_class[idx]), dim=-1) #[start_time, end_time, class_scores...]
+                    _, inds = out_class[idx, :, 0].sort(descending=True)
 
                     boundary = boundary[inds[:]]
                     boudary_true = torch.clamp(boundary[:,:2], min=0,max=video_durations[idx])
@@ -683,12 +750,7 @@ class EventSem(nn.Module):
                     output["_out"]["saliency"] = saliency_scores[0]
 
                     if self.coord_head is not None:
-                        boundary = out_coord[0]
-                        boundary[:, 0] *= -1
-                        boundary *= point[:, 3, None].repeat(1, 2)
-                        boundary += point[:, 0, None].repeat(1, 2)  
-                        # boundary /= 1/self.args.clip_length
-                        boundary *= self.args.clip_length
+                        boundary = self._decode_out_coord(out_coord[0], point)
                         boundary = torch.cat((boundary, out_class[0]), dim=-1)  
                         # print(targets)
                         if targets:
@@ -771,7 +833,7 @@ class SetCriterion(nn.Module):
         self.losses = losses
         self.saliency_margin = saliency_margin
         # self.device = args.device
-        self.device = 'cuda'
+        self.device = torch.device(self.args.device if isinstance(self.args.device, str) else ('cuda' if self.args.device != -1 else 'cpu'))
 
         # foreground and background classification
         self.foreground_label = 0
@@ -782,11 +844,11 @@ class SetCriterion(nn.Module):
         empty_weight[-1] = self.eos_coef  # lower weight for background (index 1, foreground index 0)
         self.register_buffer('empty_weight', empty_weight)
         
-        self.criterion = torch.nn.CrossEntropyLoss().to(self.args.device)
-        self.l2_criterion = torch.nn.MSELoss().to(self.args.device)
-        self.kld_criterion = torch.nn.KLDivLoss(reduction='none').to(self.args.device)
-        self.bce_criterion = nn.BCELoss(reduction='none')
-        self.SampledNCELoss = SampledNCELoss().to(self.args.device)
+        self.criterion = torch.nn.CrossEntropyLoss().to(self.device)
+        self.l2_criterion = torch.nn.MSELoss().to(self.device)
+        self.kld_criterion = torch.nn.KLDivLoss(reduction='none').to(self.device)
+        self.bce_criterion = nn.BCELoss(reduction='none').to(self.device)
+        self.SampledNCELoss = SampledNCELoss().to(self.device)
         from nncore.nn import build_loss
         self.loss=build_loss(args.cfg.model.loss_cfg)
 
@@ -1430,7 +1492,7 @@ def build_model1(args):
                    "loss_giou":args.lw_giou
                    }
 
-    losses = ["saliency", 'labels','span']
+    losses = ["saliency", 'labels', 'span']
 
     criterion = SetCriterion(
         weight_dict=weight_dict, losses=losses,

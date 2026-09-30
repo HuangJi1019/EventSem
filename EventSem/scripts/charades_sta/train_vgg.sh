@@ -96,9 +96,8 @@ data/MR.py \
 --lr 1e-5 \
 --num_dummies ${num_dummies} \
 --score_weight 0.5 \
---event_sim_threshold 0.25 \
---max_event_spans 40 \
+--event_sim_threshold 0.15 \
+--max_event_spans 10 \
 --n_semantic_proj 3 \
 --semantic_t_feat_dir "datasets/semantic_embeddings/charades-sta-token-level" \
-
-${@:1}
+"$@"

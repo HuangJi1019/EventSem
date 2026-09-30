@@ -148,15 +148,22 @@ def train(model, criterion, optimizer, lr_scheduler, train_dataset, val_dataset,
     )
     
     for epoch_i in trange(start_epoch, opt.n_epoch, desc="Epoch"):
-        # if epoch_i > -1:
-        #     losses, iteration = train_epoch(
-        #         model, criterion, train_loader, optimizer, opt, epoch_i, tb_writer
-        #     )
-        #     lr_scheduler.step()
-        #     print(f"[Epoch {epoch_i:3d}] lr = {optimizer.param_groups[0]['lr']:.2e}")
+        if epoch_i > -1:
+            losses, iteration = train_epoch(
+                model, criterion, train_loader, optimizer, opt, epoch_i, tb_writer
+            )
+            lr_scheduler.step()
+            print(f"[Epoch {epoch_i:3d}] lr = {optimizer.param_groups[0]['lr']:.2e}")
         eval_epoch_interval = opt.eval_epoch
 
-        if opt.eval_path is not None and (epoch_i + 1) % eval_epoch_interval == 0:
+        # 2026-08-25 (Ji): no evaluation before --eval_start_epoch (same semantics as
+        # Keras EarlyStopping's start_from_epoch -- NOT a learning-rate warm-up, and
+        # unrelated to warm-starting from --resume). Early evals never produce the best
+        # checkpoint and each costs minutes of GPU time. epoch_i == -1 is the
+        # --eval_untrained pass used by the eval-only arms and is never gated.
+        _before_eval_start = 0 <= epoch_i < getattr(opt, "eval_start_epoch", 0)
+        if (opt.eval_path is not None and (epoch_i + 1) % eval_epoch_interval == 0
+                and not _before_eval_start):
             with torch.no_grad():
                 metrics_no_nms, metrics_nms, eval_loss_meters, latest_file_paths = (
                     eval_epoch(
@@ -196,7 +203,7 @@ def train(model, criterion, optimizer, lr_scheduler, train_dataset, val_dataset,
 
             metrics = metrics_no_nms
             for k, v in metrics["brief"].items():
-                tb_writer.add_scalar(f"Eval/{k}", float(v), iteration)
+                tb_writer.add_scalar(f"Eval/{k}", float(v), epoch_i)
 
             if opt.dset_name in ["hl"]:
                 metrics = metrics_nms
@@ -207,10 +214,11 @@ def train(model, criterion, optimizer, lr_scheduler, train_dataset, val_dataset,
                             + metrics["brief"]["MR-full-mAP@0.75"]
                               + metrics["brief"]["MR-full-mAP"]) / 5
             elif opt.dset_name in ["tacos"]:
+                # 2026-08-22: model selection / early stop on R1 only (Ji's decision);
+                # Charades falls through to the else-branch: (R1@0.5 + R1@0.7) / 2.
                 stop_score = (metrics["brief"]["MR-full-R1@0.3"]
                               + metrics["brief"]["MR-full-R1@0.5"]
-                              + metrics["brief"]["MR-full-R1@0.7"]
-                              +metrics["brief"]["MR-full-mIoU"]) / 4
+                              + metrics["brief"]["MR-full-R1@0.7"]) / 3
             else:
                 stop_score = (
                     metrics["brief"]["MR-full-R1@0.7"]
@@ -238,7 +246,9 @@ def train(model, criterion, optimizer, lr_scheduler, train_dataset, val_dataset,
                 logger.info("The checkpoint file has been updated.")
             else:
                 es_cnt += 1
-                if opt.max_es_cnt != -1 and es_cnt > opt.max_es_cnt:  # early stop
+                if opt.max_es_cnt != -1 and es_cnt >= opt.max_es_cnt:  # early stop
+                    # NOTE 2026-08-25: was `>`, which tolerated max_es_cnt+1 evals.
+                    # Now max_es_cnt is literally the number of non-improving evals.
                     with open(opt.train_log_filepath, "a") as f:
                         f.write(f"Early Stop at epoch {epoch_i}")
                     logger.info(
@@ -301,7 +311,14 @@ def train_hl(
             )
             lr_scheduler.step() # use step() for StepLR not ReduceLROnPlateau
         eval_epoch_interval = opt.eval_epoch
-        if opt.eval_path is not None and (epoch_i + 1) % eval_epoch_interval == 0:
+        # 2026-08-25 (Ji): no evaluation before --eval_start_epoch (same semantics as
+        # Keras EarlyStopping's start_from_epoch -- NOT a learning-rate warm-up, and
+        # unrelated to warm-starting from --resume). Early evals never produce the best
+        # checkpoint and each costs minutes of GPU time. epoch_i == -1 is the
+        # --eval_untrained pass used by the eval-only arms and is never gated.
+        _before_eval_start = 0 <= epoch_i < getattr(opt, "eval_start_epoch", 0)
+        if (opt.eval_path is not None and (epoch_i + 1) % eval_epoch_interval == 0
+                and not _before_eval_start):
             with torch.no_grad():
                 metrics_no_nms, metrics_nms, eval_loss_meters, latest_file_paths = (
                     eval_epoch(
@@ -365,7 +382,9 @@ def train_hl(
                 logger.info("The checkpoint file has been updated.")
             else:
                 es_cnt += 1
-                if opt.max_es_cnt != -1 and es_cnt > opt.max_es_cnt:  # early stop
+                if opt.max_es_cnt != -1 and es_cnt >= opt.max_es_cnt:  # early stop
+                    # NOTE 2026-08-25: was `>`, which tolerated max_es_cnt+1 evals.
+                    # Now max_es_cnt is literally the number of non-improving evals.
                     with open(opt.train_log_filepath, "a") as f:
                         f.write(f"Early Stop at epoch {epoch_i}")
                     logger.info(
